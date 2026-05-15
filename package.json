@@ -2,7 +2,7 @@
   "name": "project-chat-sessions",
   "displayName": "Project Chat Sessions",
   "description": "Workspace-scoped shortcuts for ChatGPT/Codex conversation URLs.",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "Meta-Develop",
   "author": "Meta-Develop",
   "license": "MIT",

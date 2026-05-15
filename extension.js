@@ -8,6 +8,7 @@ const SESSIONS_STATE_KEY = 'projectChatSessions.sessionsByWorkspace';
 const HOME_URLS_STATE_KEY = 'projectChatSessions.homeUrlsByWorkspace';
 const SESSION_WORKSPACE_KEY_PREFIX = 'projectChatSessions.sessions.';
 const HOME_URL_WORKSPACE_KEY_PREFIX = 'projectChatSessions.homeUrl.';
+const VIEW_LOCATION_STATE_KEY = 'projectChatSessions.viewLocation';
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
@@ -86,7 +87,7 @@ class SessionTreeProvider {
 function activate(context) {
   const provider = new SessionTreeProvider(context);
 
-  updateViewLocationContext();
+  updateViewLocationContext(context);
   const treeOptions = {
     treeDataProvider: provider,
     showCollapseAll: true
@@ -99,7 +100,7 @@ function activate(context) {
     secondarySidebarTree,
     vscode.commands.registerCommand('projectChatSessions.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('projectChatSessions.setViewLocation', async () => {
-      await setViewLocation();
+      await setViewLocation(context);
     }),
     vscode.commands.registerCommand('projectChatSessions.addSession', async () => {
       await addSession(context);
@@ -169,7 +170,7 @@ function activate(context) {
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('projectChatSessions.viewLocation')) {
-        updateViewLocationContext();
+        updateViewLocationContext(context);
       }
     })
   );
@@ -179,8 +180,8 @@ function activate(context) {
 
 function deactivate() {}
 
-async function setViewLocation() {
-  const current = getViewLocation();
+async function setViewLocation(context) {
+  const current = getViewLocation(context);
   const options = [
     {
       label: 'Both',
@@ -209,14 +210,23 @@ async function setViewLocation() {
     return;
   }
 
-  await vscode.workspace
-    .getConfiguration('projectChatSessions')
-    .update('viewLocation', selected.value, vscode.ConfigurationTarget.Global);
-  updateViewLocationContext();
+  await setStoredViewLocation(context, selected.value);
+  updateViewLocationContext(context);
 }
 
-function updateViewLocationContext() {
-  const location = getViewLocation();
+async function setStoredViewLocation(context, value) {
+  try {
+    await vscode.workspace
+      .getConfiguration('projectChatSessions')
+      .update('viewLocation', value, vscode.ConfigurationTarget.Global);
+    await context.globalState.update(VIEW_LOCATION_STATE_KEY, undefined);
+  } catch (error) {
+    await context.globalState.update(VIEW_LOCATION_STATE_KEY, value);
+  }
+}
+
+function updateViewLocationContext(context) {
+  const location = getViewLocation(context);
   vscode.commands.executeCommand(
     'setContext',
     'projectChatSessions.showActivityBar',
@@ -229,11 +239,20 @@ function updateViewLocationContext() {
   );
 }
 
-function getViewLocation() {
+function getViewLocation(context) {
+  const storedValue = context && context.globalState.get(VIEW_LOCATION_STATE_KEY);
+  if (isViewLocation(storedValue)) {
+    return storedValue;
+  }
+
   const value = vscode.workspace
     .getConfiguration('projectChatSessions')
     .get('viewLocation', 'both');
-  return ['activityBar', 'secondarySidebar', 'both'].includes(value) ? value : 'both';
+  return isViewLocation(value) ? value : 'both';
+}
+
+function isViewLocation(value) {
+  return ['activityBar', 'secondarySidebar', 'both'].includes(value);
 }
 
 async function addSession(context) {

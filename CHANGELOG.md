@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.9
+
+- Added a storage fallback for the view location command when VS Code reports
+  the user setting as unavailable.
+
 ## 0.0.8
 
 - Replaced the Marketplace icon asset.
