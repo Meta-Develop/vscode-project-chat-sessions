@@ -1,0 +1,248 @@
+{
+  "name": "project-chat-sessions",
+  "displayName": "Project Chat Sessions",
+  "description": "Workspace-scoped shortcuts for ChatGPT/Codex conversation URLs.",
+  "version": "0.0.8",
+  "publisher": "Meta-Develop",
+  "author": "Meta-Develop",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Meta-Develop/vscode-project-chat-sessions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Meta-Develop/vscode-project-chat-sessions/issues"
+  },
+  "homepage": "https://github.com/Meta-Develop/vscode-project-chat-sessions#readme",
+  "icon": "media/project-chat-sessions-icon.png",
+  "galleryBanner": {
+    "color": "#111827",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "keywords": [
+    "chat",
+    "codex",
+    "workspace",
+    "sessions",
+    "productivity"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:projectChatSessions.sessionsView",
+    "onView:projectChatSessions.sessionsSecondaryView",
+    "onCommand:projectChatSessions.addSession",
+    "onCommand:projectChatSessions.importOpenCodexTabs",
+    "onCommand:projectChatSessions.importLocalCodexSessions",
+    "onCommand:projectChatSessions.newSession",
+    "onCommand:projectChatSessions.setProjectHome",
+    "onCommand:projectChatSessions.setViewLocation",
+    "onCommand:projectChatSessions.refresh"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "projectChatSessions",
+          "title": "Project Chats",
+          "icon": "media/project-chat-sessions.svg",
+          "when": "projectChatSessions.showActivityBar"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "projectChatSessionsSecondary",
+          "title": "Project Chats",
+          "icon": "media/project-chat-sessions.svg",
+          "when": "projectChatSessions.showSecondarySidebar"
+        }
+      ]
+    },
+    "views": {
+      "projectChatSessions": [
+        {
+          "id": "projectChatSessions.sessionsView",
+          "name": "Sessions"
+        }
+      ],
+      "projectChatSessionsSecondary": [
+        {
+          "id": "projectChatSessions.sessionsSecondaryView",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "projectChatSessions.addSession",
+        "title": "Add Current Chat URL",
+        "icon": "$(add)"
+      },
+      {
+        "command": "projectChatSessions.importOpenCodexTabs",
+        "title": "Import Open Codex Tabs",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "projectChatSessions.importLocalCodexSessions",
+        "title": "Import Local Codex Sessions",
+        "icon": "$(database)"
+      },
+      {
+        "command": "projectChatSessions.newSession",
+        "title": "New Session",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "projectChatSessions.setProjectHome",
+        "title": "Set Project Home URL",
+        "icon": "$(link)"
+      },
+      {
+        "command": "projectChatSessions.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "projectChatSessions.setViewLocation",
+        "title": "Set View Location",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "projectChatSessions.openSession",
+        "title": "Open Session"
+      },
+      {
+        "command": "projectChatSessions.renameSession",
+        "title": "Rename Session",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "projectChatSessions.copySessionUrl",
+        "title": "Copy Session URL",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "projectChatSessions.removeSession",
+        "title": "Remove Session",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "projectChatSessions.newSession",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@1"
+        },
+        {
+          "command": "projectChatSessions.addSession",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@2"
+        },
+        {
+          "command": "projectChatSessions.refresh",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@3"
+        },
+        {
+          "command": "projectChatSessions.importOpenCodexTabs",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@4"
+        },
+        {
+          "command": "projectChatSessions.importLocalCodexSessions",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@5"
+        },
+        {
+          "command": "projectChatSessions.setProjectHome",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@6"
+        },
+        {
+          "command": "projectChatSessions.setViewLocation",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "group": "navigation@7"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "projectChatSessions.openSession",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "group": "inline@1"
+        },
+        {
+          "command": "projectChatSessions.renameSession",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "group": "inline@2"
+        },
+        {
+          "command": "projectChatSessions.copySessionUrl",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "group": "inline@3"
+        },
+        {
+          "command": "projectChatSessions.removeSession",
+          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "group": "inline@4"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Project Chat Sessions",
+      "properties": {
+        "projectChatSessions.openMode": {
+          "type": "string",
+          "enum": [
+            "externalBrowser",
+            "simpleBrowser"
+          ],
+          "default": "externalBrowser",
+          "description": "Where to open saved ChatGPT/Codex session URLs."
+        },
+        "projectChatSessions.defaultNewSessionUrl": {
+          "type": "string",
+          "default": "https://chatgpt.com/",
+          "description": "Fallback URL used by New Session when this workspace has no project home URL."
+        },
+        "projectChatSessions.viewLocation": {
+          "type": "string",
+          "enum": [
+            "both",
+            "activityBar",
+            "secondarySidebar"
+          ],
+          "enumDescriptions": [
+            "Show Project Chats in both the Activity Bar and the secondary sidebar.",
+            "Show Project Chats only in the Activity Bar.",
+            "Show Project Chats only in the secondary sidebar next to Codex."
+          ],
+          "default": "both",
+          "description": "Where to show the Project Chats view."
+        },
+        "projectChatSessions.autoImportCodexTabs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically add open Codex conversation tabs to the current workspace session list."
+        },
+        "projectChatSessions.autoImportLocalCodexSessions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Codex thread names are read locally for session titles when available."
+        },
+        "projectChatSessions.localCodexSessionsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the local Codex sessions directory. Leave empty to use $CODEX_HOME/sessions or ~/.codex/sessions."
+        }
+      }
+    }
+  }
+}
