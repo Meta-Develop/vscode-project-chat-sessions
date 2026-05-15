@@ -2,7 +2,7 @@
   "name": "project-chat-sessions",
   "displayName": "Project Chat Sessions",
   "description": "Workspace-scoped shortcuts for ChatGPT/Codex conversation URLs.",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "publisher": "Meta-Develop",
   "author": "Meta-Develop",
   "license": "MIT",
@@ -35,7 +35,6 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:projectChatSessions.sessionsView",
-    "onView:projectChatSessions.sessionsSecondaryView",
     "onCommand:projectChatSessions.addSession",
     "onCommand:projectChatSessions.importOpenCodexTabs",
     "onCommand:projectChatSessions.importLocalCodexSessions",
@@ -51,16 +50,7 @@
         {
           "id": "projectChatSessions",
           "title": "Project Chats",
-          "icon": "media/project-chat-sessions.svg",
-          "when": "projectChatSessions.showActivityBar"
-        }
-      ],
-      "secondarySidebar": [
-        {
-          "id": "projectChatSessionsSecondary",
-          "title": "Project Chats",
-          "icon": "media/project-chat-sessions.svg",
-          "when": "projectChatSessions.showSecondarySidebar"
+          "icon": "media/project-chat-sessions.svg"
         }
       ]
     },
@@ -68,12 +58,6 @@
       "projectChatSessions": [
         {
           "id": "projectChatSessions.sessionsView",
-          "name": "Sessions"
-        }
-      ],
-      "projectChatSessionsSecondary": [
-        {
-          "id": "projectChatSessions.sessionsSecondaryView",
           "name": "Sessions"
         }
       ]
@@ -138,59 +122,59 @@
       "view/title": [
         {
           "command": "projectChatSessions.newSession",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@1"
         },
         {
           "command": "projectChatSessions.addSession",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@2"
         },
         {
           "command": "projectChatSessions.refresh",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@3"
         },
         {
           "command": "projectChatSessions.importOpenCodexTabs",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@4"
         },
         {
           "command": "projectChatSessions.importLocalCodexSessions",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@5"
         },
         {
           "command": "projectChatSessions.setProjectHome",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@6"
         },
         {
           "command": "projectChatSessions.setViewLocation",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView)",
+          "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@7"
         }
       ],
       "view/item/context": [
         {
           "command": "projectChatSessions.openSession",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "when": "view == projectChatSessions.sessionsView && viewItem == session",
           "group": "inline@1"
         },
         {
           "command": "projectChatSessions.renameSession",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "when": "view == projectChatSessions.sessionsView && viewItem == session",
           "group": "inline@2"
         },
         {
           "command": "projectChatSessions.copySessionUrl",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "when": "view == projectChatSessions.sessionsView && viewItem == session",
           "group": "inline@3"
         },
         {
           "command": "projectChatSessions.removeSession",
-          "when": "(view == projectChatSessions.sessionsView || view == projectChatSessions.sessionsSecondaryView) && viewItem == session",
+          "when": "view == projectChatSessions.sessionsView && viewItem == session",
           "group": "inline@4"
         }
       ]
@@ -215,17 +199,17 @@
         "projectChatSessions.viewLocation": {
           "type": "string",
           "enum": [
-            "both",
             "activityBar",
-            "secondarySidebar"
+            "secondarySidebar",
+            "both"
           ],
           "enumDescriptions": [
-            "Show Project Chats in both the Activity Bar and the secondary sidebar.",
-            "Show Project Chats only in the Activity Bar.",
-            "Show Project Chats only in the secondary sidebar next to Codex."
+            "Use VS Code's Move View picker to place Project Chats in the Primary Side Bar / Activity Bar.",
+            "Use VS Code's Move View picker to place Project Chats in the Secondary Side Bar.",
+            "Legacy value from older versions; treated as Activity Bar placement."
           ],
-          "default": "both",
-          "description": "Where to show the Project Chats view."
+          "default": "activityBar",
+          "description": "Preferred Project Chats view placement. VS Code owns the final layout; this command opens the built-in Move View picker."
         },
         "projectChatSessions.autoImportCodexTabs": {
           "type": "boolean",
@@ -235,7 +219,7 @@
         "projectChatSessions.autoImportLocalCodexSessions": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Codex thread names are read locally for session titles when available."
+          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, and Codex thread names are read locally for session titles when available."
         },
         "projectChatSessions.localCodexSessionsPath": {
           "type": "string",

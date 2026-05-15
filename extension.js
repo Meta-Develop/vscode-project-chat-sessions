@@ -12,6 +12,13 @@ const VIEW_LOCATION_STATE_KEY = 'projectChatSessions.viewLocation';
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
+const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
+
+const localCodexDiscoveryCache = {
+  key: undefined,
+  scannedAt: 0,
+  candidates: []
+};
 
 class SessionTreeProvider {
   constructor(context) {
@@ -84,20 +91,18 @@ class SessionTreeProvider {
   }
 }
 
-function activate(context) {
+async function activate(context) {
   const provider = new SessionTreeProvider(context);
 
-  updateViewLocationContext(context);
+  await updateViewLocationContext(context);
   const treeOptions = {
     treeDataProvider: provider,
     showCollapseAll: true
   };
   const activityBarTree = vscode.window.createTreeView('projectChatSessions.sessionsView', treeOptions);
-  const secondarySidebarTree = vscode.window.createTreeView('projectChatSessions.sessionsSecondaryView', treeOptions);
 
   context.subscriptions.push(
     activityBarTree,
-    secondarySidebarTree,
     vscode.commands.registerCommand('projectChatSessions.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('projectChatSessions.setViewLocation', async () => {
       await setViewLocation(context);
@@ -124,7 +129,7 @@ function activate(context) {
         return;
       }
 
-      const count = await importLocalCodexSessions(context);
+      const count = await importLocalCodexSessions(context, { force: true });
       provider.refresh();
       if (count === 0) {
         vscode.window.showWarningMessage('No local Codex sessions were found for this workspace.');
@@ -184,19 +189,14 @@ async function setViewLocation(context) {
   const current = getViewLocation(context);
   const options = [
     {
-      label: 'Both',
-      value: 'both',
-      description: 'Show Project Chats on the left and right.'
-    },
-    {
       label: 'Secondary Sidebar',
       value: 'secondarySidebar',
-      description: 'Show Project Chats next to Codex on the right.'
+      description: 'Open VS Code\'s Move View picker; choose Secondary Side Bar.'
     },
     {
       label: 'Activity Bar',
       value: 'activityBar',
-      description: 'Show Project Chats on the left Activity Bar.'
+      description: 'Open VS Code\'s Move View picker; choose Primary Side Bar.'
     }
   ];
 
@@ -211,7 +211,8 @@ async function setViewLocation(context) {
   }
 
   await setStoredViewLocation(context, selected.value);
-  updateViewLocationContext(context);
+  await updateViewLocationContext(context);
+  await moveProjectChatsView(selected.value);
 }
 
 async function setStoredViewLocation(context, value) {
@@ -225,18 +226,34 @@ async function setStoredViewLocation(context, value) {
   }
 }
 
-function updateViewLocationContext(context) {
+async function updateViewLocationContext(context) {
   const location = getViewLocation(context);
-  vscode.commands.executeCommand(
+  await vscode.commands.executeCommand(
     'setContext',
     'projectChatSessions.showActivityBar',
     location === 'activityBar' || location === 'both'
   );
-  vscode.commands.executeCommand(
+  await vscode.commands.executeCommand(
     'setContext',
     'projectChatSessions.showSecondarySidebar',
     location === 'secondarySidebar' || location === 'both'
   );
+}
+
+async function moveProjectChatsView(location) {
+  const target = location === 'secondarySidebar' ? 'Secondary Side Bar' : 'Primary Side Bar';
+  await vscode.commands.executeCommand('projectChatSessions.sessionsView.focus');
+  vscode.window.showInformationMessage(
+    `VS Code controls final view placement. In the next picker, choose "${target}".`
+  );
+
+  try {
+    await vscode.commands.executeCommand('workbench.action.moveFocusedView');
+  } catch {
+    vscode.window.showInformationMessage(
+      `If the move picker did not open, run "View: Move Focused View" and choose "${target}".`
+    );
+  }
 }
 
 function getViewLocation(context) {
@@ -247,8 +264,8 @@ function getViewLocation(context) {
 
   const value = vscode.workspace
     .getConfiguration('projectChatSessions')
-    .get('viewLocation', 'both');
-  return isViewLocation(value) ? value : 'both';
+    .get('viewLocation', 'activityBar');
+  return isViewLocation(value) ? value : 'activityBar';
 }
 
 function isViewLocation(value) {
@@ -314,6 +331,12 @@ async function openNewSession(context, provider) {
     return;
   }
 
+  const configuredUrl = getHomeUrl(context, workspaceKey);
+  if (configuredUrl) {
+    await openUrl(configuredUrl);
+    return;
+  }
+
   try {
     await vscode.commands.executeCommand('chatgpt.newCodexPanel');
     setTimeout(async () => {
@@ -325,12 +348,11 @@ async function openNewSession(context, provider) {
     // Fall back to URL opening when the OpenAI Codex extension is unavailable.
   }
 
-  const configuredUrl = getHomeUrl(context, workspaceKey);
   const fallbackUrl = vscode.workspace
     .getConfiguration('projectChatSessions')
     .get('defaultNewSessionUrl', 'https://chatgpt.com/');
 
-  await openUrl(configuredUrl || fallbackUrl);
+  await openUrl(fallbackUrl);
 }
 
 async function setProjectHome(context) {
@@ -651,28 +673,56 @@ function unwrapSession(input) {
 }
 
 function startAutoImport(context, provider) {
-  const run = debounce(async () => {
-    const changed = await importDetectedCodexSessions(context);
+  const refreshWhenChanged = (changed) => {
     if (changed > 0) {
       provider.refresh();
     }
+  };
+
+  const runOpenTabs = debounce(async () => {
+    if (!isAutoImportCodexTabsEnabled()) {
+      return;
+    }
+    refreshWhenChanged(await importOpenCodexTabs(context));
   }, 500);
 
-  run();
-  const interval = setInterval(run, 10000);
+  const runLocalSessions = debounce(async (options = {}) => {
+    if (!isAutoImportLocalCodexSessionsEnabled()) {
+      return;
+    }
+    refreshWhenChanged(await importLocalCodexSessions(context, options));
+  }, 500);
+
+  runOpenTabs();
+  const localScanTimeout = setTimeout(runLocalSessions, 2000);
+  const localScanInterval = setInterval(runLocalSessions, LOCAL_CODEX_SCAN_MIN_INTERVAL_MS);
 
   context.subscriptions.push(
-    { dispose: () => clearInterval(interval) },
-    vscode.window.tabGroups.onDidChangeTabs(run),
-    vscode.window.onDidChangeActiveTextEditor(run),
-    vscode.workspace.onDidChangeWorkspaceFolders(run),
+    {
+      dispose: () => {
+        clearTimeout(localScanTimeout);
+        clearInterval(localScanInterval);
+      }
+    },
+    vscode.window.tabGroups.onDidChangeTabs(runOpenTabs),
+    vscode.window.onDidChangeActiveTextEditor(runOpenTabs),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      invalidateLocalCodexDiscoveryCache();
+      runOpenTabs();
+      runLocalSessions({ force: true });
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('projectChatSessions.autoImportCodexTabs')) {
+        runOpenTabs();
+      }
       if (
-        event.affectsConfiguration('projectChatSessions.autoImportCodexTabs') ||
         event.affectsConfiguration('projectChatSessions.autoImportLocalCodexSessions') ||
         event.affectsConfiguration('projectChatSessions.localCodexSessionsPath')
       ) {
-        run();
+        if (event.affectsConfiguration('projectChatSessions.localCodexSessionsPath')) {
+          invalidateLocalCodexDiscoveryCache();
+        }
+        runLocalSessions({ force: true });
       }
     })
   );
@@ -701,13 +751,13 @@ async function importOpenCodexTabs(context) {
   return importCodexSessionCandidates(context, workspaceKey, discoverOpenCodexSessions());
 }
 
-async function importLocalCodexSessions(context) {
+async function importLocalCodexSessions(context, options = {}) {
   const workspaceKey = getWorkspaceKey();
   if (!workspaceKey) {
     return 0;
   }
 
-  return importCodexSessionCandidates(context, workspaceKey, discoverLocalCodexSessions(workspaceKey));
+  return importCodexSessionCandidates(context, workspaceKey, discoverLocalCodexSessions(workspaceKey, options));
 }
 
 async function importCodexSessionCandidates(context, workspaceKey, discovered) {
@@ -733,6 +783,10 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
       if (candidate.kind && candidate.kind !== 'codex-local' && existing.kind !== candidate.kind) {
         existing.kind = candidate.kind;
         existing.updatedAt = candidate.updatedAt || now;
+        existingChanged = true;
+      }
+      if (candidate.updatedAt && isNewerDateString(candidate.updatedAt, existing.updatedAt || existing.createdAt)) {
+        existing.updatedAt = candidate.updatedAt;
         existingChanged = true;
       }
       if (existingChanged) {
@@ -780,6 +834,15 @@ function isGenericCodexTitle(value) {
   return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
 }
 
+function isNewerDateString(candidate, current) {
+  const candidateTime = Date.parse(candidate || '');
+  const currentTime = Date.parse(current || '');
+  if (Number.isNaN(candidateTime)) {
+    return false;
+  }
+  return Number.isNaN(currentTime) || candidateTime > currentTime;
+}
+
 function discoverOpenCodexSessions() {
   const sessionsByUrl = new Map();
 
@@ -820,13 +883,25 @@ function discoverOpenCodexSessions() {
   return [...sessionsByUrl.values()];
 }
 
-function discoverLocalCodexSessions(workspaceKey) {
+function discoverLocalCodexSessions(workspaceKey, options = {}) {
   const sessionsDir = getLocalCodexSessionsDir();
   if (!sessionsDir || !fs.existsSync(sessionsDir)) {
+    invalidateLocalCodexDiscoveryCache();
     return [];
   }
 
   const workspacePath = normalizePathForComparison(workspaceKey);
+  const sessionsPath = normalizePathForComparison(sessionsDir);
+  const cacheKey = `${workspacePath}\n${sessionsPath}`;
+  const now = Date.now();
+  if (
+    !options.force &&
+    localCodexDiscoveryCache.key === cacheKey &&
+    now - localCodexDiscoveryCache.scannedAt < LOCAL_CODEX_SCAN_MIN_INTERVAL_MS
+  ) {
+    return localCodexDiscoveryCache.candidates.map((candidate) => ({ ...candidate }));
+  }
+
   const sessionIndex = readLocalCodexSessionIndex(sessionsDir);
   const candidates = [];
 
@@ -855,7 +930,17 @@ function discoverLocalCodexSessions(workspaceKey) {
     });
   }
 
+  localCodexDiscoveryCache.key = cacheKey;
+  localCodexDiscoveryCache.scannedAt = now;
+  localCodexDiscoveryCache.candidates = candidates.map((candidate) => ({ ...candidate }));
+
   return candidates;
+}
+
+function invalidateLocalCodexDiscoveryCache() {
+  localCodexDiscoveryCache.key = undefined;
+  localCodexDiscoveryCache.scannedAt = 0;
+  localCodexDiscoveryCache.candidates = [];
 }
 
 function readLocalCodexSessionIndex(sessionsDir) {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.10
+
+- Open the workspace project home URL from `New Session` when one is configured.
+- Fixed `Set View Location` to use VS Code's supported Move View workflow
+  instead of an unsupported direct secondary-sidebar contribution.
+- Throttle automatic local Codex session scans and allow the manual import
+  command to force a rescan.
+- Refresh imported local session timestamps when Codex metadata changes.
+- Keep private `.agent` context ignored by the repository-level `.gitignore`.
+- Add a checked-in VSIX and README download link for direct installation.
+
 ## 0.0.9
 
 - Added a storage fallback for the view location command when VS Code reports

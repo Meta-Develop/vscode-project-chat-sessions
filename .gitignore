@@ -1,6 +1,11 @@
 node_modules/
 *.vsix
+!project-chat-sessions.vsix
 .DS_Store
 .env
 .env.*
 !.env.example
+
+# Local/private agent context
+.agent/
+AGENTS.md

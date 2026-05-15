@@ -18,9 +18,26 @@ when the official ChatGPT/Codex history remains account-wide.
   view, with editor-tab fallback when the Codex sidebar deeplink is unavailable.
 - Rename, copy, and remove saved session shortcuts.
 - Set a workspace-specific project home URL for the `New Session` button.
-- Choose whether the `Project Chats` view appears in the Activity Bar, the
-  secondary sidebar next to Codex, or both.
+- Use VS Code's built-in Move View picker to place `Project Chats` in the
+  Activity Bar or Secondary Side Bar.
 - Open links in the system browser or VS Code Simple Browser.
+
+## Install
+
+Download the latest VSIX:
+
+[Download project-chat-sessions.vsix](https://github.com/Meta-Develop/vscode-project-chat-sessions/releases/latest/download/project-chat-sessions.vsix)
+
+The same VSIX is also checked in at the repository root:
+
+[Download the checked-in VSIX](https://github.com/Meta-Develop/vscode-project-chat-sessions/raw/main/project-chat-sessions.vsix)
+
+Then install it from VS Code with `Extensions: Install from VSIX...`, or from a
+terminal:
+
+```bash
+code --install-extension project-chat-sessions.vsix
+```
 
 ## Development
 
@@ -33,8 +50,8 @@ No local absolute paths are required.
 
 1. Open the repository workspace you want to scope sessions to.
 2. Open the `Project Chats` Activity Bar icon, or use
-   `Project Chat Sessions: Set View Location` to show it in the secondary
-   sidebar next to Codex.
+   `Project Chat Sessions: Set View Location` to open VS Code's Move View
+   picker. Choose `Secondary Side Bar` there if you want it next to Codex.
 3. Start or open a Codex conversation. Open Codex tabs are imported
    automatically into this workspace's list.
 4. Use `Add Current Chat URL` for browser-based ChatGPT/Codex URLs that are not
@@ -42,7 +59,9 @@ No local absolute paths are required.
 5. Click a saved session to open it later.
 
 Use `Set Project Home URL` to point `New Session` at a ChatGPT Project or other
-preferred Codex entry URL for the current workspace.
+preferred Codex entry URL for the current workspace. When a project home URL is
+set, `New Session` opens that URL directly. Otherwise, it asks the Codex
+extension to create a new panel and falls back to the default new-session URL.
 
 ## Codex Auto-Import
 
@@ -57,6 +76,12 @@ initial `session_meta` record, checks for a user-message record, and uses the
 Codex `thread_name` from `session_index.jsonl` as the session title when
 available. It then imports sessions whose `cwd` matches the current workspace.
 Sessions that were opened but never sent a user message are skipped.
+Automatic local scans are throttled to avoid repeatedly walking large session
+directories during normal editor activity. Use
+`Project Chat Sessions: Import Local Codex Sessions` to force an immediate
+rescan. For performance, the importer reads the beginning of each session file
+and the beginning of `session_index.jsonl`; unusually large or differently
+ordered Codex metadata can require a manual title edit after import.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.
