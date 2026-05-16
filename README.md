@@ -13,6 +13,10 @@ when the official ChatGPT/Codex history remains account-wide.
 - Automatically import open Codex conversation tabs for the current workspace.
 - Automatically import local Codex CLI sessions whose metadata points at the
   current workspace.
+- Show a spinner for running local Codex sessions and an unread indicator when
+  a tracked running session completes.
+- Choose whether session grouping and sorting use latest activity time or the
+  original session creation time.
 - Show only sessions saved for the active workspace root.
 - Open a saved session in the Codex sidebar by clicking it in the Activity Bar
   view, with editor-tab fallback when the Codex sidebar deeplink is unavailable.
@@ -75,7 +79,10 @@ The extension also scans local Codex CLI session metadata under
 initial `session_meta` record, checks for a user-message record, and uses the
 Codex `thread_name` from `session_index.jsonl` as the session title when
 available. It then imports sessions whose `cwd` matches the current workspace.
-Sessions that were opened but never sent a user message are skipped.
+Sessions that were opened but never sent a user message are skipped, as are
+Codex subagent/delegated-worker session files. If an earlier version saved one
+of those local subagent shortcuts, the next local scan drops it from the
+workspace list.
 Automatic local scans are throttled to avoid repeatedly walking large session
 directories during normal editor activity. Use
 `Project Chat Sessions: Import Local Codex Sessions` to force an immediate

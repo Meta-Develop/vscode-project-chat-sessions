@@ -9,16 +9,23 @@ const HOME_URLS_STATE_KEY = 'projectChatSessions.homeUrlsByWorkspace';
 const SESSION_WORKSPACE_KEY_PREFIX = 'projectChatSessions.sessions.';
 const HOME_URL_WORKSPACE_KEY_PREFIX = 'projectChatSessions.homeUrl.';
 const VIEW_LOCATION_STATE_KEY = 'projectChatSessions.viewLocation';
+const DATE_BASIS_STATE_KEY = 'projectChatSessions.dateBasis';
+const SESSION_DATE_BASIS_LAST_ACTIVITY = 'lastActivity';
+const SESSION_DATE_BASIS_CREATED_AT = 'createdAt';
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
 const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
+const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 5000;
+const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
+const LOCAL_CODEX_RUNNING_STALE_MS = 2 * 60 * 60 * 1000;
 
 const localCodexDiscoveryCache = {
   key: undefined,
   scannedAt: 0,
   candidates: []
 };
+let extensionContext;
 
 class SessionTreeProvider {
   constructor(context) {
@@ -48,9 +55,9 @@ class SessionTreeProvider {
     }
 
     const item = new vscode.TreeItem(element.session.title, vscode.TreeItemCollapsibleState.None);
-    item.description = formatRelativeTime(element.session.updatedAt || element.session.createdAt);
-    item.tooltip = `${element.session.title}\n${element.session.url}`;
-    item.iconPath = new vscode.ThemeIcon('comment-discussion');
+    item.description = formatRelativeTime(getSessionDateValue(element.session));
+    item.tooltip = getSessionTooltip(element.session);
+    item.iconPath = getSessionIcon(element.session);
     item.contextValue = 'session';
     item.command = {
       command: 'projectChatSessions.openSession',
@@ -92,6 +99,7 @@ class SessionTreeProvider {
 }
 
 async function activate(context) {
+  extensionContext = context;
   const provider = new SessionTreeProvider(context);
 
   await updateViewLocationContext(context);
@@ -106,6 +114,10 @@ async function activate(context) {
     vscode.commands.registerCommand('projectChatSessions.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('projectChatSessions.setViewLocation', async () => {
       await setViewLocation(context);
+    }),
+    vscode.commands.registerCommand('projectChatSessions.setDateBasis', async () => {
+      await setDateBasis(context);
+      provider.refresh();
     }),
     vscode.commands.registerCommand('projectChatSessions.addSession', async () => {
       await addSession(context);
@@ -132,10 +144,10 @@ async function activate(context) {
       const count = await importLocalCodexSessions(context, { force: true });
       provider.refresh();
       if (count === 0) {
-        vscode.window.showWarningMessage('No local Codex sessions were found for this workspace.');
+        vscode.window.showWarningMessage('No local Codex session changes were found for this workspace.');
         return;
       }
-      vscode.window.showInformationMessage(`Imported ${count} local Codex session${count === 1 ? '' : 's'}.`);
+      vscode.window.showInformationMessage(`Updated ${count} local Codex session${count === 1 ? '' : 's'}.`);
     }),
     vscode.commands.registerCommand('projectChatSessions.newSession', async () => {
       await openNewSession(context, provider);
@@ -177,6 +189,9 @@ async function activate(context) {
       if (event.affectsConfiguration('projectChatSessions.viewLocation')) {
         updateViewLocationContext(context);
       }
+      if (event.affectsConfiguration('projectChatSessions.dateBasis')) {
+        provider.refresh();
+      }
     })
   );
 
@@ -213,6 +228,45 @@ async function setViewLocation(context) {
   await setStoredViewLocation(context, selected.value);
   await updateViewLocationContext(context);
   await moveProjectChatsView(selected.value);
+}
+
+async function setDateBasis(context) {
+  const current = getSessionDateBasis(context);
+  const options = [
+    {
+      label: 'Last Activity',
+      value: SESSION_DATE_BASIS_LAST_ACTIVITY,
+      description: 'Group and sort by the latest conversation activity.'
+    },
+    {
+      label: 'Created Time',
+      value: SESSION_DATE_BASIS_CREATED_AT,
+      description: 'Group and sort by when the session was first created.'
+    }
+  ];
+
+  const selected = await vscode.window.showQuickPick(options, {
+    title: 'Project Chats Date Basis',
+    placeHolder: 'Choose which timestamp groups and sorts sessions',
+    activeItem: options.find((option) => option.value === current)
+  });
+
+  if (!selected) {
+    return;
+  }
+
+  await setStoredDateBasis(context, selected.value);
+}
+
+async function setStoredDateBasis(context, value) {
+  try {
+    await vscode.workspace
+      .getConfiguration('projectChatSessions')
+      .update('dateBasis', value, vscode.ConfigurationTarget.Global);
+    await context.globalState.update(DATE_BASIS_STATE_KEY, undefined);
+  } catch {
+    await context.globalState.update(DATE_BASIS_STATE_KEY, value);
+  }
 }
 
 async function setStoredViewLocation(context, value) {
@@ -434,7 +488,11 @@ async function touchSession(context, sessionId) {
     return;
   }
 
-  target.updatedAt = new Date().toISOString();
+  const now = new Date().toISOString();
+  target.lastOpenedAt = now;
+  target.lastReadAt = now;
+  delete target.unreadAt;
+  target.updatedAt = now;
   await setSessions(context, workspaceKey, sortSessions(sessions));
 }
 
@@ -557,6 +615,7 @@ function requireWorkspaceKey() {
 }
 
 function groupSessions(sessions) {
+  const dateBasis = getSessionDateBasis();
   const buckets = [
     { id: 'today', label: 'Today', sessions: [] },
     { id: 'yesterday', label: 'Yesterday', sessions: [] },
@@ -565,7 +624,7 @@ function groupSessions(sessions) {
   ];
 
   for (const session of sessions) {
-    const age = ageInDays(session.updatedAt || session.createdAt);
+    const age = ageInDays(getSessionDateValue(session, dateBasis));
     if (age === 0) {
       buckets[0].sessions.push(session);
     } else if (age === 1) {
@@ -583,11 +642,36 @@ function groupSessions(sessions) {
 }
 
 function sortSessions(sessions) {
+  const dateBasis = getSessionDateBasis();
   return sessions.sort((left, right) => {
-    const leftTime = Date.parse(left.updatedAt || left.createdAt || 0);
-    const rightTime = Date.parse(right.updatedAt || right.createdAt || 0);
+    const leftTime = Date.parse(getSessionDateValue(left, dateBasis) || 0);
+    const rightTime = Date.parse(getSessionDateValue(right, dateBasis) || 0);
     return rightTime - leftTime;
   });
+}
+
+function getSessionDateValue(session, dateBasis = getSessionDateBasis()) {
+  if (dateBasis === SESSION_DATE_BASIS_CREATED_AT) {
+    return session.createdAt || session.updatedAt;
+  }
+
+  return session.updatedAt || session.createdAt;
+}
+
+function getSessionDateBasis(context = extensionContext) {
+  const storedValue = context && context.globalState.get(DATE_BASIS_STATE_KEY);
+  if (isSessionDateBasis(storedValue)) {
+    return storedValue;
+  }
+
+  const value = vscode.workspace
+    .getConfiguration('projectChatSessions')
+    .get('dateBasis', SESSION_DATE_BASIS_LAST_ACTIVITY);
+  return isSessionDateBasis(value) ? value : SESSION_DATE_BASIS_LAST_ACTIVITY;
+}
+
+function isSessionDateBasis(value) {
+  return value === SESSION_DATE_BASIS_LAST_ACTIVITY || value === SESSION_DATE_BASIS_CREATED_AT;
 }
 
 function ageInDays(value) {
@@ -617,6 +701,31 @@ function formatRelativeTime(value) {
 
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function getSessionIcon(session) {
+  if (session.status === 'running') {
+    return new vscode.ThemeIcon('sync~spin');
+  }
+
+  if (isSessionUnread(session)) {
+    return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('notificationsInfoIcon.foreground'));
+  }
+
+  return new vscode.ThemeIcon('comment-discussion');
+}
+
+function getSessionTooltip(session) {
+  const state = session.status === 'running'
+    ? 'Running'
+    : isSessionUnread(session)
+      ? 'Unread completed session'
+      : undefined;
+  return [session.title, state, session.url].filter(Boolean).join('\n');
+}
+
+function isSessionUnread(session) {
+  return Boolean(session.unreadAt && !isDateAtOrAfter(session.lastReadAt, session.unreadAt));
 }
 
 function looksLikeChatUrl(value) {
@@ -693,23 +802,36 @@ function startAutoImport(context, provider) {
     refreshWhenChanged(await importLocalCodexSessions(context, options));
   }, 500);
 
+  const runLocalStatusRefresh = debounce(async () => {
+    if (!isAutoImportLocalCodexSessionsEnabled()) {
+      return;
+    }
+    refreshWhenChanged(await refreshLocalCodexSessionStatuses(context));
+  }, 500);
+
   runOpenTabs();
   const localScanTimeout = setTimeout(runLocalSessions, 2000);
   const localScanInterval = setInterval(runLocalSessions, LOCAL_CODEX_SCAN_MIN_INTERVAL_MS);
+  const localStatusInterval = setInterval(runLocalStatusRefresh, LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS);
 
   context.subscriptions.push(
     {
       dispose: () => {
         clearTimeout(localScanTimeout);
         clearInterval(localScanInterval);
+        clearInterval(localStatusInterval);
       }
     },
     vscode.window.tabGroups.onDidChangeTabs(runOpenTabs),
-    vscode.window.onDidChangeActiveTextEditor(runOpenTabs),
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      runOpenTabs();
+      runLocalStatusRefresh();
+    }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       invalidateLocalCodexDiscoveryCache();
       runOpenTabs();
       runLocalSessions({ force: true });
+      runLocalStatusRefresh();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('projectChatSessions.autoImportCodexTabs')) {
@@ -723,6 +845,7 @@ function startAutoImport(context, provider) {
           invalidateLocalCodexDiscoveryCache();
         }
         runLocalSessions({ force: true });
+        runLocalStatusRefresh();
       }
     })
   );
@@ -757,7 +880,13 @@ async function importLocalCodexSessions(context, options = {}) {
     return 0;
   }
 
-  return importCodexSessionCandidates(context, workspaceKey, discoverLocalCodexSessions(workspaceKey, options));
+  const removed = await pruneImportedLocalCodexSubagentSessions(context, workspaceKey);
+  const imported = await importCodexSessionCandidates(
+    context,
+    workspaceKey,
+    discoverLocalCodexSessions(workspaceKey, options)
+  );
+  return removed + imported;
 }
 
 async function importCodexSessionCandidates(context, workspaceKey, discovered) {
@@ -785,6 +914,13 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
         existing.updatedAt = candidate.updatedAt || now;
         existingChanged = true;
       }
+      if (candidate.localFilePath && existing.localFilePath !== candidate.localFilePath) {
+        existing.localFilePath = candidate.localFilePath;
+        existingChanged = true;
+      }
+      if (mergeSessionStatus(existing, candidate)) {
+        existingChanged = true;
+      }
       if (candidate.updatedAt && isNewerDateString(candidate.updatedAt, existing.updatedAt || existing.createdAt)) {
         existing.updatedAt = candidate.updatedAt;
         existingChanged = true;
@@ -802,13 +938,93 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
       kind: candidate.kind || 'codex',
       titleSource: candidate.titleSource || 'auto',
       createdAt: candidate.createdAt || now,
-      updatedAt: candidate.updatedAt || now
+      updatedAt: candidate.updatedAt || now,
+      localFilePath: candidate.localFilePath,
+      status: candidate.status,
+      lastStartedAt: candidate.lastStartedAt,
+      lastCompletedAt: candidate.lastCompletedAt
     });
     changed += 1;
   }
 
   if (changed > 0) {
     await setSessions(context, workspaceKey, sessions);
+  }
+
+  return changed;
+}
+
+async function refreshLocalCodexSessionStatuses(context) {
+  const workspaceKey = getWorkspaceKey();
+  if (!workspaceKey) {
+    return 0;
+  }
+
+  const sessions = getSessions(context, workspaceKey);
+  let changed = 0;
+
+  for (const session of sessions) {
+    const parsed = parseCodexConversationUri(session.url);
+    if (!parsed || parsed.kind !== 'local') {
+      continue;
+    }
+
+    const filePath = session.localFilePath;
+    if (!filePath || !fs.existsSync(filePath)) {
+      continue;
+    }
+
+    const status = readLocalCodexSessionStatus(filePath);
+    if (!status.status) {
+      continue;
+    }
+
+    if (mergeSessionStatus(session, status)) {
+      changed += 1;
+    }
+
+    if (status.lastActivityAt && isNewerDateString(status.lastActivityAt, session.updatedAt || session.createdAt)) {
+      session.updatedAt = status.lastActivityAt;
+      changed += 1;
+    }
+  }
+
+  if (changed > 0) {
+    await setSessions(context, workspaceKey, sessions);
+  }
+
+  return changed;
+}
+
+function mergeSessionStatus(session, candidate) {
+  let changed = false;
+  const previousStatus = session.status;
+
+  if (candidate.status && session.status !== candidate.status) {
+    session.status = candidate.status;
+    changed = true;
+  }
+
+  for (const field of ['lastStartedAt', 'lastCompletedAt']) {
+    if (candidate[field] && session[field] !== candidate[field]) {
+      session[field] = candidate[field];
+      changed = true;
+    }
+  }
+
+  if (
+    (previousStatus === 'running' || previousStatus === 'stale') &&
+    candidate.status === 'completed' &&
+    candidate.lastCompletedAt &&
+    !isDateAtOrAfter(session.lastReadAt, candidate.lastCompletedAt)
+  ) {
+    session.unreadAt = candidate.lastCompletedAt;
+    changed = true;
+  }
+
+  if (session.unreadAt && isDateAtOrAfter(session.lastReadAt, session.unreadAt)) {
+    delete session.unreadAt;
+    changed = true;
   }
 
   return changed;
@@ -834,6 +1050,41 @@ function isGenericCodexTitle(value) {
   return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
 }
 
+async function pruneImportedLocalCodexSubagentSessions(context, workspaceKey) {
+  const sessions = getSessions(context, workspaceKey);
+  const retained = [];
+  let removed = 0;
+
+  for (const session of sessions) {
+    if (isImportedLocalCodexSubagentSession(session)) {
+      removed += 1;
+      continue;
+    }
+
+    retained.push(session);
+  }
+
+  if (removed > 0) {
+    await setSessions(context, workspaceKey, retained);
+  }
+
+  return removed;
+}
+
+function isImportedLocalCodexSubagentSession(session) {
+  if (!session?.localFilePath) {
+    return false;
+  }
+
+  const parsed = parseCodexConversationUri(session.url);
+  if (!parsed || parsed.kind !== 'local') {
+    return false;
+  }
+
+  const meta = readLocalCodexSessionMeta(session.localFilePath);
+  return isLocalCodexSubagentSessionMeta(meta);
+}
+
 function isNewerDateString(candidate, current) {
   const candidateTime = Date.parse(candidate || '');
   const currentTime = Date.parse(current || '');
@@ -841,6 +1092,29 @@ function isNewerDateString(candidate, current) {
     return false;
   }
   return Number.isNaN(currentTime) || candidateTime > currentTime;
+}
+
+function isDateAtOrAfter(candidate, current) {
+  const candidateTime = Date.parse(candidate || '');
+  const currentTime = Date.parse(current || '');
+  if (Number.isNaN(candidateTime) || Number.isNaN(currentTime)) {
+    return false;
+  }
+  return candidateTime >= currentTime;
+}
+
+function latestDateString(values) {
+  let latest;
+  for (const value of values) {
+    const normalized = dateStringOrUndefined(value);
+    if (!normalized) {
+      continue;
+    }
+    if (!latest || Date.parse(normalized) > Date.parse(latest)) {
+      latest = normalized;
+    }
+  }
+  return latest;
 }
 
 function discoverOpenCodexSessions() {
@@ -911,13 +1185,22 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       continue;
     }
 
+    if (isLocalCodexSubagentSessionMeta(meta)) {
+      continue;
+    }
+
     if (normalizePathForComparison(meta.cwd) !== workspacePath) {
       continue;
     }
 
     const createdAt = dateStringOrUndefined(meta.timestamp) || new Date(file.mtimeMs).toISOString();
     const indexEntry = sessionIndex.get(meta.id);
-    const updatedAt = dateStringOrUndefined(indexEntry?.updatedAt) || new Date(file.mtimeMs).toISOString();
+    const status = readLocalCodexSessionStatus(file.path);
+    const updatedAt = latestDateString([
+      dateStringOrUndefined(indexEntry?.updatedAt),
+      status.lastActivityAt,
+      new Date(file.mtimeMs).toISOString()
+    ]);
     candidates.push({
       id: meta.id,
       conversationId: meta.id,
@@ -926,7 +1209,11 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       kind: 'codex-local',
       titleSource: titleSourceFromLocalCodexSession(meta, indexEntry),
       createdAt,
-      updatedAt
+      updatedAt,
+      localFilePath: file.path,
+      status: status.status,
+      lastStartedAt: status.lastStartedAt,
+      lastCompletedAt: status.lastCompletedAt
     });
   }
 
@@ -1057,6 +1344,8 @@ function readLocalCodexSessionMeta(filePath) {
       id: stringOrUndefined(record.payload.id),
       cwd: stringOrUndefined(record.payload.cwd),
       timestamp: stringOrUndefined(record.payload.timestamp),
+      source: record.payload.source,
+      threadSource: stringOrUndefined(record.payload.thread_source),
       hasUserMessage,
       firstUserMessage
     };
@@ -1067,6 +1356,27 @@ function readLocalCodexSessionMeta(filePath) {
   }
 
   return meta ? { ...meta, hasUserMessage, firstUserMessage } : undefined;
+}
+
+function isLocalCodexSubagentSessionMeta(meta) {
+  if (!meta) {
+    return false;
+  }
+
+  if (meta.threadSource === 'subagent') {
+    return true;
+  }
+
+  const source = meta.source;
+  if (typeof source === 'string') {
+    return source.toLowerCase() === 'subagent';
+  }
+
+  return Boolean(
+    source &&
+    typeof source === 'object' &&
+    (source.subagent || source.thread_spawn || source.threadSpawn)
+  );
 }
 
 function extractLocalCodexUserMessageText(line) {
@@ -1132,6 +1442,83 @@ function readFilePrefix(filePath, maxBytes) {
       }
     }
   }
+}
+
+function readFileSuffix(filePath, maxBytes) {
+  let handle;
+  try {
+    const stat = fs.statSync(filePath);
+    const start = Math.max(0, stat.size - maxBytes);
+    const length = stat.size - start;
+    handle = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(handle, buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    if (handle !== undefined) {
+      try {
+        fs.closeSync(handle);
+      } catch {
+        // Ignore close failures for best-effort discovery.
+      }
+    }
+  }
+}
+
+function readLocalCodexSessionStatus(filePath) {
+  const text = readFileSuffix(filePath, LOCAL_CODEX_STATUS_SUFFIX_BYTES);
+  if (!text) {
+    return {};
+  }
+
+  let lastStartedAt;
+  let lastCompletedAt;
+  let lastActivityAt;
+
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const timestamp = dateStringOrUndefined(record.timestamp);
+    if (timestamp) {
+      lastActivityAt = latestDateString([lastActivityAt, timestamp]);
+    }
+
+    if (record.type !== 'event_msg' || !record.payload || typeof record.payload !== 'object') {
+      continue;
+    }
+
+    if (record.payload.type === 'task_started' && timestamp) {
+      lastStartedAt = timestamp;
+    } else if (record.payload.type === 'task_complete' && timestamp) {
+      lastCompletedAt = timestamp;
+    }
+  }
+
+  let status;
+  if (lastStartedAt && !isDateAtOrAfter(lastCompletedAt, lastStartedAt)) {
+    const activeAt = Date.parse(lastActivityAt || lastStartedAt);
+    status = Date.now() - activeAt > LOCAL_CODEX_RUNNING_STALE_MS ? 'stale' : 'running';
+  } else if (lastCompletedAt) {
+    status = 'completed';
+  }
+
+  return {
+    status,
+    lastStartedAt,
+    lastCompletedAt,
+    lastActivityAt
+  };
 }
 
 function titleFromLocalCodexSession(meta, indexEntry) {

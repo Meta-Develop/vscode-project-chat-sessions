@@ -2,7 +2,7 @@
   "name": "project-chat-sessions",
   "displayName": "Project Chat Sessions",
   "description": "Workspace-scoped shortcuts for ChatGPT/Codex conversation URLs.",
-  "version": "0.0.10",
+  "version": "0.0.13",
   "publisher": "Meta-Develop",
   "author": "Meta-Develop",
   "license": "MIT",
@@ -41,6 +41,7 @@
     "onCommand:projectChatSessions.newSession",
     "onCommand:projectChatSessions.setProjectHome",
     "onCommand:projectChatSessions.setViewLocation",
+    "onCommand:projectChatSessions.setDateBasis",
     "onCommand:projectChatSessions.refresh"
   ],
   "main": "./extension.js",
@@ -99,6 +100,11 @@
         "icon": "$(layout-sidebar-right)"
       },
       {
+        "command": "projectChatSessions.setDateBasis",
+        "title": "Set Date Basis",
+        "icon": "$(calendar)"
+      },
+      {
         "command": "projectChatSessions.openSession",
         "title": "Open Session"
       },
@@ -154,6 +160,11 @@
           "command": "projectChatSessions.setViewLocation",
           "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@7"
+        },
+        {
+          "command": "projectChatSessions.setDateBasis",
+          "when": "view == projectChatSessions.sessionsView",
+          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -211,6 +222,19 @@
           "default": "activityBar",
           "description": "Preferred Project Chats view placement. VS Code owns the final layout; this command opens the built-in Move View picker."
         },
+        "projectChatSessions.dateBasis": {
+          "type": "string",
+          "enum": [
+            "lastActivity",
+            "createdAt"
+          ],
+          "enumDescriptions": [
+            "Group, sort, and display sessions by their latest conversation activity.",
+            "Group, sort, and display sessions by when the session was first created."
+          ],
+          "default": "lastActivity",
+          "description": "Which timestamp Project Chats uses for grouping, sorting, and relative time labels."
+        },
         "projectChatSessions.autoImportCodexTabs": {
           "type": "boolean",
           "default": true,
@@ -219,7 +243,7 @@
         "projectChatSessions.autoImportLocalCodexSessions": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, and Codex thread names are read locally for session titles when available."
+          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, Codex thread names are read locally for session titles when available, and subagent sessions are ignored."
         },
         "projectChatSessions.localCodexSessionsPath": {
           "type": "string",

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.0.13
+
+- Added a storage fallback for the date basis picker when VS Code has not
+  loaded the new contributed setting yet.
+
+## 0.0.12
+
+- Added a selectable date basis for session grouping and sorting: latest
+  activity or original session creation time.
+- Skip Codex subagent/delegated-worker session files during local session
+  import, and drop previously auto-imported subagent shortcuts on rescan.
+
+## 0.0.11
+
+- Show a spinning icon for local Codex sessions that are currently running.
+- Show an unread indicator when a tracked running Codex session completes, and
+  clear it after opening the session.
+
 ## 0.0.10
 
 - Open the workspace project home URL from `New Session` when one is configured.
