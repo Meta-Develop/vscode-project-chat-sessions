@@ -4,13 +4,14 @@
 
 - Added a storage fallback for the date basis picker when VS Code has not
   loaded the new contributed setting yet.
+- Skip Codex subagent/delegated-worker session files during local session
+  import and open-tab import, and drop previously auto-imported subagent
+  shortcuts on rescan.
 
 ## 0.0.12
 
 - Added a selectable date basis for session grouping and sorting: latest
   activity or original session creation time.
-- Skip Codex subagent/delegated-worker session files during local session
-  import, and drop previously auto-imported subagent shortcuts on rescan.
 
 ## 0.0.11
 

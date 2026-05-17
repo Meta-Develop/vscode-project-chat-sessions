@@ -72,7 +72,8 @@ extension to create a new panel and falls back to the default new-session URL.
 Automatic import only works for Codex conversations that are open as VS Code
 editor tabs in the same window as the workspace. If nothing appears, run
 `Project Chat Sessions: Import Open Codex Tabs` from the Command Palette after
-opening the Codex conversation tab.
+opening the Codex conversation tab. Local Codex tabs backed by subagent session
+files are ignored.
 
 The extension also scans local Codex CLI session metadata under
 `$CODEX_HOME/sessions` or `~/.codex/sessions`. It reads each JSONL file's

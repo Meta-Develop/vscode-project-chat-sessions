@@ -25,6 +25,12 @@ const localCodexDiscoveryCache = {
   scannedAt: 0,
   candidates: []
 };
+
+const localCodexSessionMetaCache = {
+  key: undefined,
+  scannedAt: 0,
+  byId: new Map()
+};
 let extensionContext;
 
 class SessionTreeProvider {
@@ -131,10 +137,10 @@ async function activate(context) {
       const count = await importOpenCodexTabs(context);
       provider.refresh();
       if (count === 0) {
-        vscode.window.showWarningMessage('No open Codex conversation tabs were detected in this VS Code window.');
+        vscode.window.showWarningMessage('No open Codex tab session changes were found in this VS Code window.');
         return;
       }
-      vscode.window.showInformationMessage(`Imported ${count} open Codex session${count === 1 ? '' : 's'}.`);
+      vscode.window.showInformationMessage(`Updated ${count} open Codex session${count === 1 ? '' : 's'}.`);
     }),
     vscode.commands.registerCommand('projectChatSessions.importLocalCodexSessions', async () => {
       if (!requireWorkspaceKey()) {
@@ -871,7 +877,9 @@ async function importOpenCodexTabs(context) {
     return 0;
   }
 
-  return importCodexSessionCandidates(context, workspaceKey, discoverOpenCodexSessions());
+  const removed = await pruneImportedLocalCodexSubagentSessions(context, workspaceKey);
+  const imported = await importCodexSessionCandidates(context, workspaceKey, discoverOpenCodexSessions());
+  return removed + imported;
 }
 
 async function importLocalCodexSessions(context, options = {}) {
@@ -880,7 +888,7 @@ async function importLocalCodexSessions(context, options = {}) {
     return 0;
   }
 
-  const removed = await pruneImportedLocalCodexSubagentSessions(context, workspaceKey);
+  const removed = await pruneImportedLocalCodexSubagentSessions(context, workspaceKey, options);
   const imported = await importCodexSessionCandidates(
     context,
     workspaceKey,
@@ -1050,13 +1058,14 @@ function isGenericCodexTitle(value) {
   return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
 }
 
-async function pruneImportedLocalCodexSubagentSessions(context, workspaceKey) {
+async function pruneImportedLocalCodexSubagentSessions(context, workspaceKey, options = {}) {
   const sessions = getSessions(context, workspaceKey);
+  const localMetaById = readLocalCodexSessionMetaById(undefined, options);
   const retained = [];
   let removed = 0;
 
   for (const session of sessions) {
-    if (isImportedLocalCodexSubagentSession(session)) {
+    if (isImportedLocalCodexSubagentSession(session, localMetaById)) {
       removed += 1;
       continue;
     }
@@ -1071,8 +1080,8 @@ async function pruneImportedLocalCodexSubagentSessions(context, workspaceKey) {
   return removed;
 }
 
-function isImportedLocalCodexSubagentSession(session) {
-  if (!session?.localFilePath) {
+function isImportedLocalCodexSubagentSession(session, localMetaById = readLocalCodexSessionMetaById()) {
+  if (!session) {
     return false;
   }
 
@@ -1081,7 +1090,8 @@ function isImportedLocalCodexSubagentSession(session) {
     return false;
   }
 
-  const meta = readLocalCodexSessionMeta(session.localFilePath);
+  const meta = (session.localFilePath ? readLocalCodexSessionMeta(session.localFilePath) : undefined) ||
+    localMetaById.get(parsed.conversationId);
   return isLocalCodexSubagentSessionMeta(meta);
 }
 
@@ -1127,34 +1137,50 @@ function discoverOpenCodexSessions() {
         continue;
       }
 
-      const parsed = parseCodexConversationUri(uri.toString());
-      if (!parsed) {
+      const candidate = codexSessionCandidateFromUri(
+        uri,
+        cleanTitle(tab.label)
+      );
+      if (!candidate) {
         continue;
       }
 
-      sessionsByUrl.set(uri.toString(), {
-        conversationId: parsed.conversationId,
-        title: cleanTitle(tab.label) || `Codex ${parsed.conversationId.slice(0, 8)}`,
-        url: uri.toString(),
-        titleSource: 'codex-tab'
-      });
+      sessionsByUrl.set(uri.toString(), candidate);
     }
   }
 
   const activeUri = vscode.window.activeTextEditor?.document.uri;
   if (activeUri) {
-    const parsed = parseCodexConversationUri(activeUri.toString());
-    if (parsed && !sessionsByUrl.has(activeUri.toString())) {
-      sessionsByUrl.set(activeUri.toString(), {
-        conversationId: parsed.conversationId,
-        title: `Codex ${parsed.conversationId.slice(0, 8)}`,
-        url: activeUri.toString(),
-        titleSource: 'codex-tab'
-      });
+    const candidate = codexSessionCandidateFromUri(activeUri);
+    if (candidate && !sessionsByUrl.has(activeUri.toString())) {
+      sessionsByUrl.set(activeUri.toString(), candidate);
     }
   }
 
   return [...sessionsByUrl.values()];
+}
+
+function codexSessionCandidateFromUri(uri, label) {
+  const parsed = parseCodexConversationUri(uri.toString());
+  if (!parsed) {
+    return undefined;
+  }
+
+  const localMeta = parsed.kind === 'local'
+    ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
+    : undefined;
+  if (isLocalCodexSubagentSessionMeta(localMeta)) {
+    return undefined;
+  }
+
+  return {
+    conversationId: parsed.conversationId,
+    title: label || `Codex ${parsed.conversationId.slice(0, 8)}`,
+    url: uri.toString(),
+    kind: localMeta ? 'codex-local' : undefined,
+    localFilePath: localMeta?.localFilePath,
+    titleSource: 'codex-tab'
+  };
 }
 
 function discoverLocalCodexSessions(workspaceKey, options = {}) {
@@ -1176,11 +1202,11 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
     return localCodexDiscoveryCache.candidates.map((candidate) => ({ ...candidate }));
   }
 
+  const localMetaById = readLocalCodexSessionMetaById(sessionsDir, options);
   const sessionIndex = readLocalCodexSessionIndex(sessionsDir);
   const candidates = [];
 
-  for (const file of collectJsonlFiles(sessionsDir)) {
-    const meta = readLocalCodexSessionMeta(file.path);
+  for (const meta of [...localMetaById.values()].sort((left, right) => right.mtimeMs - left.mtimeMs)) {
     if (!meta || !meta.id || !meta.cwd || !meta.hasUserMessage) {
       continue;
     }
@@ -1193,13 +1219,13 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       continue;
     }
 
-    const createdAt = dateStringOrUndefined(meta.timestamp) || new Date(file.mtimeMs).toISOString();
+    const createdAt = dateStringOrUndefined(meta.timestamp) || new Date(meta.mtimeMs).toISOString();
     const indexEntry = sessionIndex.get(meta.id);
-    const status = readLocalCodexSessionStatus(file.path);
+    const status = readLocalCodexSessionStatus(meta.localFilePath);
     const updatedAt = latestDateString([
       dateStringOrUndefined(indexEntry?.updatedAt),
       status.lastActivityAt,
-      new Date(file.mtimeMs).toISOString()
+      new Date(meta.mtimeMs).toISOString()
     ]);
     candidates.push({
       id: meta.id,
@@ -1210,7 +1236,7 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       titleSource: titleSourceFromLocalCodexSession(meta, indexEntry),
       createdAt,
       updatedAt,
-      localFilePath: file.path,
+      localFilePath: meta.localFilePath,
       status: status.status,
       lastStartedAt: status.lastStartedAt,
       lastCompletedAt: status.lastCompletedAt
@@ -1228,6 +1254,13 @@ function invalidateLocalCodexDiscoveryCache() {
   localCodexDiscoveryCache.key = undefined;
   localCodexDiscoveryCache.scannedAt = 0;
   localCodexDiscoveryCache.candidates = [];
+  invalidateLocalCodexSessionMetaCache();
+}
+
+function invalidateLocalCodexSessionMetaCache() {
+  localCodexSessionMetaCache.key = undefined;
+  localCodexSessionMetaCache.scannedAt = 0;
+  localCodexSessionMetaCache.byId = new Map();
 }
 
 function readLocalCodexSessionIndex(sessionsDir) {
@@ -1299,6 +1332,59 @@ function collectJsonlFiles(rootDir) {
   }
 
   return files.sort((left, right) => right.mtimeMs - left.mtimeMs);
+}
+
+function readLocalCodexSessionMetaById(sessionsDir = getLocalCodexSessionsDir(), options = {}) {
+  if (!sessionsDir || !fs.existsSync(sessionsDir)) {
+    invalidateLocalCodexSessionMetaCache();
+    return new Map();
+  }
+
+  const sessionsPath = normalizePathForComparison(sessionsDir);
+  const now = Date.now();
+  if (
+    !options.force &&
+    localCodexSessionMetaCache.key === sessionsPath &&
+    now - localCodexSessionMetaCache.scannedAt < LOCAL_CODEX_SCAN_MIN_INTERVAL_MS
+  ) {
+    return localCodexSessionMetaCache.byId;
+  }
+
+  const byId = new Map();
+  for (const file of collectJsonlFiles(sessionsDir)) {
+    const meta = readLocalCodexSessionMeta(file.path);
+    if (!meta?.id || byId.has(meta.id)) {
+      continue;
+    }
+
+    byId.set(meta.id, {
+      ...meta,
+      localFilePath: file.path,
+      mtimeMs: file.mtimeMs
+    });
+  }
+
+  localCodexSessionMetaCache.key = sessionsPath;
+  localCodexSessionMetaCache.scannedAt = now;
+  localCodexSessionMetaCache.byId = byId;
+  return byId;
+}
+
+function getLocalCodexSessionMetaByConversationId(conversationId) {
+  const id = stringOrUndefined(conversationId);
+  if (!id) {
+    return undefined;
+  }
+
+  const sessionsDir = getLocalCodexSessionsDir();
+  let metaById = readLocalCodexSessionMetaById(sessionsDir);
+  let meta = metaById.get(id);
+  if (!meta) {
+    metaById = readLocalCodexSessionMetaById(sessionsDir, { force: true });
+    meta = metaById.get(id);
+  }
+
+  return meta;
 }
 
 function readLocalCodexSessionMeta(filePath) {

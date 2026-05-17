@@ -238,7 +238,7 @@
         "projectChatSessions.autoImportCodexTabs": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add open Codex conversation tabs to the current workspace session list."
+          "description": "Automatically add open Codex conversation tabs to the current workspace session list. Local subagent tabs are ignored when their session metadata is available."
         },
         "projectChatSessions.autoImportLocalCodexSessions": {
           "type": "boolean",
