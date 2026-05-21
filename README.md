@@ -15,6 +15,8 @@ when the official ChatGPT/Codex history remains account-wide.
   current workspace.
 - Show a spinner for running local Codex sessions and an unread indicator when
   a tracked running session completes.
+- Keep running and unread sessions visible in a top `Running / Unread` group
+  above the normal date groups.
 - Choose whether session grouping and sorting use latest activity time or the
   original session creation time.
 - Show only sessions saved for the active workspace root.
@@ -62,6 +64,11 @@ No local absolute paths are required.
    represented as VS Code Codex tabs.
 5. Click a saved session to open it later.
 
+Running sessions and completed sessions you have not reopened also appear in
+the persistent `Running / Unread` group at the top of the view, regardless of
+the selected date basis. The normal `Today`, `Yesterday`, `This Week`, and
+`Older` groups remain below it.
+
 Use `Set Project Home URL` to point `New Session` at a ChatGPT Project or other
 preferred Codex entry URL for the current workspace. When a project home URL is
 set, `New Session` opens that URL directly. Otherwise, it asks the Codex
@@ -79,7 +86,10 @@ The extension also scans local Codex CLI session metadata under
 `$CODEX_HOME/sessions` or `~/.codex/sessions`. It reads each JSONL file's
 initial `session_meta` record, checks for a user-message record, and uses the
 Codex `thread_name` from `session_index.jsonl` as the session title when
-available. It then imports sessions whose `cwd` matches the current workspace.
+available. Local Codex tab imports also replace generic labels such as `Codex`
+or timestamp/id fallbacks with the local thread name or first user-message title
+when that metadata is available. It then imports sessions whose `cwd` matches
+the current workspace.
 Sessions that were opened but never sent a user message are skipped, as are
 Codex subagent/delegated-worker session files and Multi-Agent_Coding_Orchestrator
 child/worker sessions. If an earlier version saved one of those local auxiliary
@@ -88,8 +98,10 @@ Automatic local scans are throttled to avoid repeatedly walking large session
 directories during normal editor activity. Use
 `Project Chat Sessions: Import Local Codex Sessions` to force an immediate
 rescan. For performance, the importer reads the beginning of each session file
-and the beginning of `session_index.jsonl`; unusually large or differently
-ordered Codex metadata can require a manual title edit after import.
+and the beginning and end of `session_index.jsonl` so recently appended title
+metadata is picked up without reading unrelated account history. Unusually large
+or differently ordered Codex session files can require a manual title edit after
+import.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.

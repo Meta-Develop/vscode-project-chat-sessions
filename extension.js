@@ -1672,6 +1672,35 @@ function readFilePrefix(filePath, maxBytes) {
   }
 }
 
+function readFilePrefixAndSuffix(filePath, maxBytes) {
+  let handle;
+  try {
+    const stat = fs.statSync(filePath);
+    handle = fs.openSync(filePath, 'r');
+    if (stat.size <= maxBytes * 2) {
+      const buffer = Buffer.alloc(stat.size);
+      const bytesRead = fs.readSync(handle, buffer, 0, stat.size, 0);
+      return buffer.subarray(0, bytesRead).toString('utf8');
+    }
+
+    const prefix = Buffer.alloc(maxBytes);
+    const prefixBytes = fs.readSync(handle, prefix, 0, maxBytes, 0);
+    const suffix = Buffer.alloc(maxBytes);
+    const suffixBytes = fs.readSync(handle, suffix, 0, maxBytes, stat.size - maxBytes);
+    return `${prefix.subarray(0, prefixBytes).toString('utf8')}\n${suffix.subarray(0, suffixBytes).toString('utf8')}`;
+  } catch {
+    return undefined;
+  } finally {
+    if (handle !== undefined) {
+      try {
+        fs.closeSync(handle);
+      } catch {
+        // Ignore close failures for best-effort discovery.
+      }
+    }
+  }
+}
+
 function readFileSuffix(filePath, maxBytes) {
   let handle;
   try {
@@ -1922,10 +1951,30 @@ function parseCodexConversationUri(value) {
 }
 
 function cleanTitle(value) {
-  return value
+  return (value || '')
     .replace(/\s+/g, ' ')
     .replace(/^Codex Task\s*[-:]\s*/i, '')
     .trim();
+}
+
+function firstStringAtPaths(value, paths) {
+  for (const segments of paths) {
+    let current = value;
+    for (const segment of segments) {
+      if (!current || typeof current !== 'object') {
+        current = undefined;
+        break;
+      }
+      current = current[segment];
+    }
+
+    const text = stringOrUndefined(current);
+    if (text) {
+      return text;
+    }
+  }
+
+  return undefined;
 }
 
 function isAutoImportCodexTabsEnabled() {
