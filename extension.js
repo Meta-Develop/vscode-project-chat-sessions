@@ -628,7 +628,6 @@ function requireWorkspaceKey() {
 
 function groupSessions(sessions) {
   const dateBasis = getSessionDateBasis();
-  const prioritySessions = prioritySessionsForTopGroup(sessions, dateBasis);
   const buckets = [
     { id: 'today', label: 'Today', sessions: [] },
     { id: 'yesterday', label: 'Yesterday', sessions: [] },
@@ -649,61 +648,9 @@ function groupSessions(sessions) {
     }
   }
 
-  const dateGroups = buckets
+  return buckets
     .filter((bucket) => bucket.sessions.length > 0)
     .map((bucket) => ({ type: 'group', ...bucket }));
-  return [
-    {
-      type: 'group',
-      id: 'runningUnread',
-      label: 'Running / Unread',
-      sessions: prioritySessions
-    },
-    ...dateGroups
-  ];
-}
-
-function prioritySessionsForTopGroup(sessions, dateBasis) {
-  const seen = new Set();
-  return sessions
-    .map((session, index) => ({ session, index }))
-    .filter(({ session }) => {
-      if (session.status !== 'running' && !isSessionUnread(session)) {
-        return false;
-      }
-
-      const key = session.id || normalizeUrl(session.url || '');
-      if (seen.has(key)) {
-        return false;
-      }
-
-      seen.add(key);
-      return true;
-    })
-    .sort((left, right) => {
-      const leftRank = topGroupSessionRank(left.session);
-      const rightRank = topGroupSessionRank(right.session);
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
-      }
-
-      const leftTime = Date.parse(getSessionDateValue(left.session, dateBasis) || 0);
-      const rightTime = Date.parse(getSessionDateValue(right.session, dateBasis) || 0);
-      if (leftTime !== rightTime) {
-        return rightTime - leftTime;
-      }
-
-      return left.index - right.index;
-    })
-    .map(({ session }) => session);
-}
-
-function topGroupSessionRank(session) {
-  if (session.status === 'running') {
-    return 0;
-  }
-
-  return 1;
 }
 
 function sortSessions(sessions) {
@@ -1234,6 +1181,7 @@ function codexSessionCandidateFromUri(uri, label) {
     return undefined;
   }
 
+  const cleanLabel = cleanTitle(label);
   const localMeta = parsed.kind === 'local'
     ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
     : undefined;
@@ -1241,13 +1189,18 @@ function codexSessionCandidateFromUri(uri, label) {
     return undefined;
   }
 
+  const localIndexEntry = localMeta ? getLocalCodexSessionIndexEntry(localMeta.id || parsed.conversationId) : undefined;
+  const localTitle = localMeta ? titleFromLocalCodexSession(localMeta, localIndexEntry) : undefined;
+  const localTitleSource = localMeta ? titleSourceFromLocalCodexSession(localMeta, localIndexEntry) : undefined;
+  const useLocalTitle = localTitle && (!cleanLabel || isGenericCodexTitle(cleanLabel));
+
   return {
     conversationId: parsed.conversationId,
-    title: label || `Codex ${parsed.conversationId.slice(0, 8)}`,
+    title: useLocalTitle ? localTitle : cleanLabel || `Codex ${parsed.conversationId.slice(0, 8)}`,
     url: uri.toString(),
     kind: localMeta ? 'codex-local' : undefined,
     localFilePath: localMeta?.localFilePath,
-    titleSource: 'codex-tab'
+    titleSource: useLocalTitle ? localTitleSource : 'codex-tab'
   };
 }
 
@@ -1334,7 +1287,7 @@ function invalidateLocalCodexSessionMetaCache() {
 function readLocalCodexSessionIndex(sessionsDir) {
   const indexPath = path.join(path.dirname(sessionsDir), 'session_index.jsonl');
   const index = new Map();
-  const text = readFilePrefix(indexPath, 4194304);
+  const text = readFilePrefixAndSuffix(indexPath, 4194304);
   if (!text) {
     return index;
   }
@@ -1351,19 +1304,79 @@ function readLocalCodexSessionIndex(sessionsDir) {
       continue;
     }
 
-    const id = stringOrUndefined(record.id);
-    const threadName = cleanCodexThreadName(record.thread_name);
+    const id = localCodexIndexId(record);
+    const threadName = cleanCodexThreadName(localCodexIndexThreadName(record));
     if (!id || !threadName) {
       continue;
     }
 
     index.set(id, {
       threadName,
-      updatedAt: stringOrUndefined(record.updated_at)
+      updatedAt: localCodexIndexUpdatedAt(record)
     });
   }
 
   return index;
+}
+
+function getLocalCodexSessionIndexEntry(conversationId) {
+  const sessionsDir = getLocalCodexSessionsDir();
+  if (!sessionsDir || !fs.existsSync(sessionsDir)) {
+    return undefined;
+  }
+
+  return readLocalCodexSessionIndex(sessionsDir).get(conversationId);
+}
+
+function localCodexIndexId(record) {
+  return firstStringAtPaths(record, [
+    ['id'],
+    ['session_id'],
+    ['sessionId'],
+    ['conversation_id'],
+    ['conversationId'],
+    ['payload', 'id'],
+    ['payload', 'session_id'],
+    ['payload', 'sessionId'],
+    ['payload', 'conversation_id'],
+    ['payload', 'conversationId'],
+    ['session', 'id'],
+    ['thread', 'id']
+  ]);
+}
+
+function localCodexIndexThreadName(record) {
+  return firstStringAtPaths(record, [
+    ['thread_name'],
+    ['threadName'],
+    ['title'],
+    ['name'],
+    ['payload', 'thread_name'],
+    ['payload', 'threadName'],
+    ['payload', 'title'],
+    ['payload', 'name'],
+    ['thread', 'thread_name'],
+    ['thread', 'threadName'],
+    ['thread', 'title'],
+    ['thread', 'name']
+  ]);
+}
+
+function localCodexIndexUpdatedAt(record) {
+  return firstStringAtPaths(record, [
+    ['updated_at'],
+    ['updatedAt'],
+    ['last_activity_at'],
+    ['lastActivityAt'],
+    ['timestamp'],
+    ['payload', 'updated_at'],
+    ['payload', 'updatedAt'],
+    ['payload', 'last_activity_at'],
+    ['payload', 'lastActivityAt'],
+    ['payload', 'timestamp'],
+    ['thread', 'updated_at'],
+    ['thread', 'updatedAt']
+  ]);
 }
 
 function collectJsonlFiles(rootDir) {
@@ -1593,6 +1606,35 @@ function readFilePrefix(filePath, maxBytes) {
     const buffer = Buffer.alloc(maxBytes);
     const bytesRead = fs.readSync(handle, buffer, 0, maxBytes, 0);
     return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    if (handle !== undefined) {
+      try {
+        fs.closeSync(handle);
+      } catch {
+        // Ignore close failures for best-effort discovery.
+      }
+    }
+  }
+}
+
+function readFilePrefixAndSuffix(filePath, maxBytes) {
+  let handle;
+  try {
+    const stat = fs.statSync(filePath);
+    handle = fs.openSync(filePath, 'r');
+    if (stat.size <= maxBytes * 2) {
+      const buffer = Buffer.alloc(stat.size);
+      const bytesRead = fs.readSync(handle, buffer, 0, stat.size, 0);
+      return buffer.subarray(0, bytesRead).toString('utf8');
+    }
+
+    const prefix = Buffer.alloc(maxBytes);
+    const prefixBytes = fs.readSync(handle, prefix, 0, maxBytes, 0);
+    const suffix = Buffer.alloc(maxBytes);
+    const suffixBytes = fs.readSync(handle, suffix, 0, maxBytes, stat.size - maxBytes);
+    return `${prefix.subarray(0, prefixBytes).toString('utf8')}\n${suffix.subarray(0, suffixBytes).toString('utf8')}`;
   } catch {
     return undefined;
   } finally {
@@ -1856,10 +1898,30 @@ function parseCodexConversationUri(value) {
 }
 
 function cleanTitle(value) {
-  return value
+  return (value || '')
     .replace(/\s+/g, ' ')
     .replace(/^Codex Task\s*[-:]\s*/i, '')
     .trim();
+}
+
+function firstStringAtPaths(value, paths) {
+  for (const segments of paths) {
+    let current = value;
+    for (const segment of segments) {
+      if (!current || typeof current !== 'object') {
+        current = undefined;
+        break;
+      }
+      current = current[segment];
+    }
+
+    const text = stringOrUndefined(current);
+    if (text) {
+      return text;
+    }
+  }
+
+  return undefined;
 }
 
 function isAutoImportCodexTabsEnabled() {
