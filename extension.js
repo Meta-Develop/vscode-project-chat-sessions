@@ -1061,13 +1061,7 @@ function shouldUpdateExistingTitle(existing, candidate) {
 }
 
 function isGenericCodexTitle(value) {
-  const title = stringOrUndefined(value);
-  if (!title) {
-    return true;
-  }
-
-  return /^(?:Codex|Codex Task|Codex session|Codex [a-z0-9][a-z0-9_-]{5,}|Codex \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i
-    .test(title);
+  return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
 }
 
 async function pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey, options = {}) {
@@ -1181,7 +1175,6 @@ function codexSessionCandidateFromUri(uri, label) {
     return undefined;
   }
 
-  const cleanLabel = cleanTitle(label);
   const localMeta = parsed.kind === 'local'
     ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
     : undefined;
@@ -1189,18 +1182,13 @@ function codexSessionCandidateFromUri(uri, label) {
     return undefined;
   }
 
-  const localIndexEntry = localMeta ? getLocalCodexSessionIndexEntry(localMeta.id || parsed.conversationId) : undefined;
-  const localTitle = localMeta ? titleFromLocalCodexSession(localMeta, localIndexEntry) : undefined;
-  const localTitleSource = localMeta ? titleSourceFromLocalCodexSession(localMeta, localIndexEntry) : undefined;
-  const useLocalTitle = localTitle && (!cleanLabel || isGenericCodexTitle(cleanLabel));
-
   return {
     conversationId: parsed.conversationId,
-    title: useLocalTitle ? localTitle : cleanLabel || `Codex ${parsed.conversationId.slice(0, 8)}`,
+    title: label || `Codex ${parsed.conversationId.slice(0, 8)}`,
     url: uri.toString(),
     kind: localMeta ? 'codex-local' : undefined,
     localFilePath: localMeta?.localFilePath,
-    titleSource: useLocalTitle ? localTitleSource : 'codex-tab'
+    titleSource: 'codex-tab'
   };
 }
 
@@ -1287,7 +1275,7 @@ function invalidateLocalCodexSessionMetaCache() {
 function readLocalCodexSessionIndex(sessionsDir) {
   const indexPath = path.join(path.dirname(sessionsDir), 'session_index.jsonl');
   const index = new Map();
-  const text = readFilePrefixAndSuffix(indexPath, 4194304);
+  const text = readFilePrefix(indexPath, 4194304);
   if (!text) {
     return index;
   }
@@ -1304,79 +1292,19 @@ function readLocalCodexSessionIndex(sessionsDir) {
       continue;
     }
 
-    const id = localCodexIndexId(record);
-    const threadName = cleanCodexThreadName(localCodexIndexThreadName(record));
+    const id = stringOrUndefined(record.id);
+    const threadName = cleanCodexThreadName(record.thread_name);
     if (!id || !threadName) {
       continue;
     }
 
     index.set(id, {
       threadName,
-      updatedAt: localCodexIndexUpdatedAt(record)
+      updatedAt: stringOrUndefined(record.updated_at)
     });
   }
 
   return index;
-}
-
-function getLocalCodexSessionIndexEntry(conversationId) {
-  const sessionsDir = getLocalCodexSessionsDir();
-  if (!sessionsDir || !fs.existsSync(sessionsDir)) {
-    return undefined;
-  }
-
-  return readLocalCodexSessionIndex(sessionsDir).get(conversationId);
-}
-
-function localCodexIndexId(record) {
-  return firstStringAtPaths(record, [
-    ['id'],
-    ['session_id'],
-    ['sessionId'],
-    ['conversation_id'],
-    ['conversationId'],
-    ['payload', 'id'],
-    ['payload', 'session_id'],
-    ['payload', 'sessionId'],
-    ['payload', 'conversation_id'],
-    ['payload', 'conversationId'],
-    ['session', 'id'],
-    ['thread', 'id']
-  ]);
-}
-
-function localCodexIndexThreadName(record) {
-  return firstStringAtPaths(record, [
-    ['thread_name'],
-    ['threadName'],
-    ['title'],
-    ['name'],
-    ['payload', 'thread_name'],
-    ['payload', 'threadName'],
-    ['payload', 'title'],
-    ['payload', 'name'],
-    ['thread', 'thread_name'],
-    ['thread', 'threadName'],
-    ['thread', 'title'],
-    ['thread', 'name']
-  ]);
-}
-
-function localCodexIndexUpdatedAt(record) {
-  return firstStringAtPaths(record, [
-    ['updated_at'],
-    ['updatedAt'],
-    ['last_activity_at'],
-    ['lastActivityAt'],
-    ['timestamp'],
-    ['payload', 'updated_at'],
-    ['payload', 'updatedAt'],
-    ['payload', 'last_activity_at'],
-    ['payload', 'lastActivityAt'],
-    ['payload', 'timestamp'],
-    ['thread', 'updated_at'],
-    ['thread', 'updatedAt']
-  ]);
 }
 
 function collectJsonlFiles(rootDir) {
@@ -1606,35 +1534,6 @@ function readFilePrefix(filePath, maxBytes) {
     const buffer = Buffer.alloc(maxBytes);
     const bytesRead = fs.readSync(handle, buffer, 0, maxBytes, 0);
     return buffer.subarray(0, bytesRead).toString('utf8');
-  } catch {
-    return undefined;
-  } finally {
-    if (handle !== undefined) {
-      try {
-        fs.closeSync(handle);
-      } catch {
-        // Ignore close failures for best-effort discovery.
-      }
-    }
-  }
-}
-
-function readFilePrefixAndSuffix(filePath, maxBytes) {
-  let handle;
-  try {
-    const stat = fs.statSync(filePath);
-    handle = fs.openSync(filePath, 'r');
-    if (stat.size <= maxBytes * 2) {
-      const buffer = Buffer.alloc(stat.size);
-      const bytesRead = fs.readSync(handle, buffer, 0, stat.size, 0);
-      return buffer.subarray(0, bytesRead).toString('utf8');
-    }
-
-    const prefix = Buffer.alloc(maxBytes);
-    const prefixBytes = fs.readSync(handle, prefix, 0, maxBytes, 0);
-    const suffix = Buffer.alloc(maxBytes);
-    const suffixBytes = fs.readSync(handle, suffix, 0, maxBytes, stat.size - maxBytes);
-    return `${prefix.subarray(0, prefixBytes).toString('utf8')}\n${suffix.subarray(0, suffixBytes).toString('utf8')}`;
   } catch {
     return undefined;
   } finally {
@@ -1898,30 +1797,10 @@ function parseCodexConversationUri(value) {
 }
 
 function cleanTitle(value) {
-  return (value || '')
+  return value
     .replace(/\s+/g, ' ')
     .replace(/^Codex Task\s*[-:]\s*/i, '')
     .trim();
-}
-
-function firstStringAtPaths(value, paths) {
-  for (const segments of paths) {
-    let current = value;
-    for (const segment of segments) {
-      if (!current || typeof current !== 'object') {
-        current = undefined;
-        break;
-      }
-      current = current[segment];
-    }
-
-    const text = stringOrUndefined(current);
-    if (text) {
-      return text;
-    }
-  }
-
-  return undefined;
 }
 
 function isAutoImportCodexTabsEnabled() {
