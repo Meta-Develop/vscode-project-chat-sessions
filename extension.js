@@ -1114,7 +1114,13 @@ function shouldUpdateExistingTitle(existing, candidate) {
 }
 
 function isGenericCodexTitle(value) {
-  return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
+  const title = stringOrUndefined(value);
+  if (!title) {
+    return true;
+  }
+
+  return /^(?:Codex|Codex Task|Codex session|Codex [a-z0-9][a-z0-9_-]{5,}|Codex \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i
+    .test(title);
 }
 
 async function pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey, options = {}) {
