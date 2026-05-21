@@ -19,6 +19,12 @@ const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
 const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 5000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
 const LOCAL_CODEX_RUNNING_STALE_MS = 2 * 60 * 60 * 1000;
+// Hide implementation-detail Codex sessions used by Multi-Agent_Coding_Orchestrator:
+// https://github.com/Meta-Develop/Multi-Agent_Coding_Orchestrator
+const LOCAL_CODEX_AUXILIARY_SESSION_PROMPT_MARKERS = [
+  'You are a child orchestrator in an opt-in local Codex CLI supervisor run.',
+  'You are a worker in an opt-in local Codex CLI supervised run.'
+];
 
 const localCodexDiscoveryCache = {
   key: undefined,
@@ -622,6 +628,7 @@ function requireWorkspaceKey() {
 
 function groupSessions(sessions) {
   const dateBasis = getSessionDateBasis();
+  const prioritySessions = prioritySessionsForTopGroup(sessions, dateBasis);
   const buckets = [
     { id: 'today', label: 'Today', sessions: [] },
     { id: 'yesterday', label: 'Yesterday', sessions: [] },
@@ -642,9 +649,61 @@ function groupSessions(sessions) {
     }
   }
 
-  return buckets
+  const dateGroups = buckets
     .filter((bucket) => bucket.sessions.length > 0)
     .map((bucket) => ({ type: 'group', ...bucket }));
+  return [
+    {
+      type: 'group',
+      id: 'runningUnread',
+      label: 'Running / Unread',
+      sessions: prioritySessions
+    },
+    ...dateGroups
+  ];
+}
+
+function prioritySessionsForTopGroup(sessions, dateBasis) {
+  const seen = new Set();
+  return sessions
+    .map((session, index) => ({ session, index }))
+    .filter(({ session }) => {
+      if (session.status !== 'running' && !isSessionUnread(session)) {
+        return false;
+      }
+
+      const key = session.id || normalizeUrl(session.url || '');
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => {
+      const leftRank = topGroupSessionRank(left.session);
+      const rightRank = topGroupSessionRank(right.session);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+
+      const leftTime = Date.parse(getSessionDateValue(left.session, dateBasis) || 0);
+      const rightTime = Date.parse(getSessionDateValue(right.session, dateBasis) || 0);
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+
+      return left.index - right.index;
+    })
+    .map(({ session }) => session);
+}
+
+function topGroupSessionRank(session) {
+  if (session.status === 'running') {
+    return 0;
+  }
+
+  return 1;
 }
 
 function sortSessions(sessions) {
@@ -877,7 +936,7 @@ async function importOpenCodexTabs(context) {
     return 0;
   }
 
-  const removed = await pruneImportedLocalCodexSubagentSessions(context, workspaceKey);
+  const removed = await pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey);
   const imported = await importCodexSessionCandidates(context, workspaceKey, discoverOpenCodexSessions());
   return removed + imported;
 }
@@ -888,7 +947,7 @@ async function importLocalCodexSessions(context, options = {}) {
     return 0;
   }
 
-  const removed = await pruneImportedLocalCodexSubagentSessions(context, workspaceKey, options);
+  const removed = await pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey, options);
   const imported = await importCodexSessionCandidates(
     context,
     workspaceKey,
@@ -1058,14 +1117,14 @@ function isGenericCodexTitle(value) {
   return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
 }
 
-async function pruneImportedLocalCodexSubagentSessions(context, workspaceKey, options = {}) {
+async function pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey, options = {}) {
   const sessions = getSessions(context, workspaceKey);
   const localMetaById = readLocalCodexSessionMetaById(undefined, options);
   const retained = [];
   let removed = 0;
 
   for (const session of sessions) {
-    if (isImportedLocalCodexSubagentSession(session, localMetaById)) {
+    if (isImportedLocalCodexAuxiliarySession(session, localMetaById)) {
       removed += 1;
       continue;
     }
@@ -1080,7 +1139,7 @@ async function pruneImportedLocalCodexSubagentSessions(context, workspaceKey, op
   return removed;
 }
 
-function isImportedLocalCodexSubagentSession(session, localMetaById = readLocalCodexSessionMetaById()) {
+function isImportedLocalCodexAuxiliarySession(session, localMetaById = readLocalCodexSessionMetaById()) {
   if (!session) {
     return false;
   }
@@ -1090,9 +1149,12 @@ function isImportedLocalCodexSubagentSession(session, localMetaById = readLocalC
     return false;
   }
 
-  const meta = (session.localFilePath ? readLocalCodexSessionMeta(session.localFilePath) : undefined) ||
+  let meta = (session.localFilePath ? readLocalCodexSessionMeta(session.localFilePath) : undefined) ||
     localMetaById.get(parsed.conversationId);
-  return isLocalCodexSubagentSessionMeta(meta);
+  if (!meta?.firstUserMessage) {
+    meta = getLocalCodexSessionMetaByConversationId(parsed.conversationId) || meta;
+  }
+  return isLocalCodexAuxiliarySessionMeta(meta);
 }
 
 function isNewerDateString(candidate, current) {
@@ -1169,7 +1231,7 @@ function codexSessionCandidateFromUri(uri, label) {
   const localMeta = parsed.kind === 'local'
     ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
     : undefined;
-  if (isLocalCodexSubagentSessionMeta(localMeta)) {
+  if (isLocalCodexAuxiliarySessionMeta(localMeta)) {
     return undefined;
   }
 
@@ -1211,7 +1273,7 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       continue;
     }
 
-    if (isLocalCodexSubagentSessionMeta(meta)) {
+    if (isLocalCodexAuxiliarySessionMeta(meta)) {
       continue;
     }
 
@@ -1379,7 +1441,7 @@ function getLocalCodexSessionMetaByConversationId(conversationId) {
   const sessionsDir = getLocalCodexSessionsDir();
   let metaById = readLocalCodexSessionMetaById(sessionsDir);
   let meta = metaById.get(id);
-  if (!meta) {
+  if (!meta || !meta.firstUserMessage) {
     metaById = readLocalCodexSessionMetaById(sessionsDir, { force: true });
     meta = metaById.get(id);
   }
@@ -1444,7 +1506,7 @@ function readLocalCodexSessionMeta(filePath) {
   return meta ? { ...meta, hasUserMessage, firstUserMessage } : undefined;
 }
 
-function isLocalCodexSubagentSessionMeta(meta) {
+function isLocalCodexAuxiliarySessionMeta(meta) {
   if (!meta) {
     return false;
   }
@@ -1455,13 +1517,21 @@ function isLocalCodexSubagentSessionMeta(meta) {
 
   const source = meta.source;
   if (typeof source === 'string') {
-    return source.toLowerCase() === 'subagent';
+    return source.toLowerCase() === 'subagent' || isLocalCodexOrchestratorSessionMeta(meta);
   }
 
   return Boolean(
     source &&
     typeof source === 'object' &&
     (source.subagent || source.thread_spawn || source.threadSpawn)
+  ) || isLocalCodexOrchestratorSessionMeta(meta);
+}
+
+function isLocalCodexOrchestratorSessionMeta(meta) {
+  const firstUserMessage = stringOrUndefined(meta?.firstUserMessage);
+  return Boolean(
+    firstUserMessage &&
+    LOCAL_CODEX_AUXILIARY_SESSION_PROMPT_MARKERS.some((marker) => firstUserMessage.includes(marker))
   );
 }
 

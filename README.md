@@ -73,7 +73,7 @@ Automatic import only works for Codex conversations that are open as VS Code
 editor tabs in the same window as the workspace. If nothing appears, run
 `Project Chat Sessions: Import Open Codex Tabs` from the Command Palette after
 opening the Codex conversation tab. Local Codex tabs backed by subagent session
-files are ignored.
+files or Multi-Agent_Coding_Orchestrator child/worker sessions are ignored.
 
 The extension also scans local Codex CLI session metadata under
 `$CODEX_HOME/sessions` or `~/.codex/sessions`. It reads each JSONL file's
@@ -81,9 +81,9 @@ initial `session_meta` record, checks for a user-message record, and uses the
 Codex `thread_name` from `session_index.jsonl` as the session title when
 available. It then imports sessions whose `cwd` matches the current workspace.
 Sessions that were opened but never sent a user message are skipped, as are
-Codex subagent/delegated-worker session files. If an earlier version saved one
-of those local subagent shortcuts, the next local scan drops it from the
-workspace list.
+Codex subagent/delegated-worker session files and Multi-Agent_Coding_Orchestrator
+child/worker sessions. If an earlier version saved one of those local auxiliary
+shortcuts, the next local scan drops it from the workspace list.
 Automatic local scans are throttled to avoid repeatedly walking large session
 directories during normal editor activity. Use
 `Project Chat Sessions: Import Local Codex Sessions` to force an immediate

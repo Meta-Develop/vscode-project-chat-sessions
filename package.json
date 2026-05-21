@@ -238,12 +238,12 @@
         "projectChatSessions.autoImportCodexTabs": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add open Codex conversation tabs to the current workspace session list. Local subagent tabs are ignored when their session metadata is available."
+          "description": "Automatically add open Codex conversation tabs to the current workspace session list. Local subagent and orchestrator child/worker tabs are ignored when their session metadata is available."
         },
         "projectChatSessions.autoImportLocalCodexSessions": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, Codex thread names are read locally for session titles when available, and subagent sessions are ignored."
+          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, Codex thread names are read locally for session titles when available, and subagent plus orchestrator child/worker sessions are ignored."
         },
         "projectChatSessions.localCodexSessionsPath": {
           "type": "string",
