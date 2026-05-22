@@ -18,7 +18,7 @@ const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
 const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
 const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 5000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
-const LOCAL_CODEX_RUNNING_STALE_MS = 2 * 60 * 60 * 1000;
+const LOCAL_CODEX_RUNNING_STALE_MS = 5 * 60 * 1000;
 // Hide implementation-detail Codex sessions used by Multi-Agent_Coding_Orchestrator:
 // https://github.com/Meta-Develop/Multi-Agent_Coding_Orchestrator
 const LOCAL_CODEX_AUXILIARY_SESSION_PROMPT_MARKERS = [
@@ -720,6 +720,14 @@ function getSessionIcon(session) {
     return new vscode.ThemeIcon('sync~spin');
   }
 
+  if (session.status === 'failed') {
+    return new vscode.ThemeIcon('error', new vscode.ThemeColor('problemsErrorIcon.foreground'));
+  }
+
+  if (session.status === 'aborted' || session.status === 'stale') {
+    return new vscode.ThemeIcon('debug-stop', new vscode.ThemeColor('descriptionForeground'));
+  }
+
   if (isSessionUnread(session)) {
     return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('notificationsInfoIcon.foreground'));
   }
@@ -728,12 +736,23 @@ function getSessionIcon(session) {
 }
 
 function getSessionTooltip(session) {
-  const state = session.status === 'running'
-    ? 'Running'
-    : isSessionUnread(session)
-      ? 'Unread completed session'
-      : undefined;
+  const state = getSessionStatusLabel(session) || (isSessionUnread(session) ? 'Unread completed session' : undefined);
   return [session.title, state, session.url].filter(Boolean).join('\n');
+}
+
+function getSessionStatusLabel(session) {
+  switch (session.status) {
+    case 'running':
+      return 'Running';
+    case 'failed':
+      return 'Failed';
+    case 'aborted':
+      return 'Aborted';
+    case 'stale':
+      return 'Stopped';
+    default:
+      return undefined;
+  }
 }
 
 function isSessionUnread(session) {
@@ -956,7 +975,9 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
       localFilePath: candidate.localFilePath,
       status: candidate.status,
       lastStartedAt: candidate.lastStartedAt,
-      lastCompletedAt: candidate.lastCompletedAt
+      lastCompletedAt: candidate.lastCompletedAt,
+      lastAbortedAt: candidate.lastAbortedAt,
+      lastFailedAt: candidate.lastFailedAt
     });
     changed += 1;
   }
@@ -1019,7 +1040,7 @@ function mergeSessionStatus(session, candidate) {
     changed = true;
   }
 
-  for (const field of ['lastStartedAt', 'lastCompletedAt']) {
+  for (const field of ['lastStartedAt', 'lastCompletedAt', 'lastAbortedAt', 'lastFailedAt']) {
     if (candidate[field] && session[field] !== candidate[field]) {
       session[field] = candidate[field];
       changed = true;
@@ -1248,7 +1269,9 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       localFilePath: meta.localFilePath,
       status: status.status,
       lastStartedAt: status.lastStartedAt,
-      lastCompletedAt: status.lastCompletedAt
+      lastCompletedAt: status.lastCompletedAt,
+      lastAbortedAt: status.lastAbortedAt,
+      lastFailedAt: status.lastFailedAt
     });
   }
 
@@ -1578,9 +1601,15 @@ function readLocalCodexSessionStatus(filePath) {
 
   let lastStartedAt;
   let lastCompletedAt;
+  let lastAbortedAt;
+  let lastFailedAt;
   let lastActivityAt;
+  let lastStartedOrder = -1;
+  let lastTurnStatusEvent;
 
-  for (const line of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/);
+  for (let lineOrder = 0; lineOrder < lines.length; lineOrder += 1) {
+    const line = lines[lineOrder];
     if (!line.trim()) {
       continue;
     }
@@ -1601,25 +1630,66 @@ function readLocalCodexSessionStatus(filePath) {
       continue;
     }
 
-    if (record.payload.type === 'task_started' && timestamp) {
-      lastStartedAt = timestamp;
-    } else if (record.payload.type === 'task_complete' && timestamp) {
-      lastCompletedAt = timestamp;
+    const completedAt = dateStringOrUndefined(record.payload.completed_at);
+    const eventAt = latestDateString([timestamp, completedAt]);
+    if (completedAt) {
+      lastActivityAt = latestDateString([lastActivityAt, completedAt]);
+    }
+
+    if (record.payload.type === 'task_started') {
+      if (timestamp) {
+        lastStartedAt = timestamp;
+      }
+      lastStartedOrder = lineOrder;
+      lastTurnStatusEvent = { type: 'started', at: timestamp, order: lineOrder };
+    } else if (record.payload.type === 'task_complete') {
+      if (eventAt) {
+        lastCompletedAt = eventAt;
+      }
+      if (lineOrder >= lastStartedOrder && lastTurnStatusEvent?.type !== 'failed') {
+        lastTurnStatusEvent = { type: 'completed', at: eventAt, order: lineOrder };
+      }
+    } else if (record.payload.type === 'turn_aborted') {
+      if (eventAt) {
+        lastAbortedAt = eventAt;
+      }
+      if (lineOrder >= lastStartedOrder && lastTurnStatusEvent?.type !== 'failed') {
+        lastTurnStatusEvent = { type: 'aborted', at: eventAt, order: lineOrder };
+      }
+    } else if (record.payload.type === 'error') {
+      if (timestamp) {
+        lastFailedAt = timestamp;
+      }
+      if (lineOrder >= lastStartedOrder) {
+        lastTurnStatusEvent = { type: 'failed', at: timestamp, order: lineOrder };
+      }
     }
   }
 
   let status;
-  if (lastStartedAt && !isDateAtOrAfter(lastCompletedAt, lastStartedAt)) {
+  if (lastTurnStatusEvent?.type === 'completed') {
+    status = 'completed';
+  } else if (lastTurnStatusEvent?.type === 'aborted') {
+    status = 'aborted';
+  } else if (lastTurnStatusEvent?.type === 'failed') {
+    status = 'failed';
+  } else if (lastStartedAt) {
     const activeAt = Date.parse(lastActivityAt || lastStartedAt);
     status = Date.now() - activeAt > LOCAL_CODEX_RUNNING_STALE_MS ? 'stale' : 'running';
   } else if (lastCompletedAt) {
     status = 'completed';
+  } else if (lastAbortedAt) {
+    status = 'aborted';
+  } else if (lastFailedAt) {
+    status = 'failed';
   }
 
   return {
     status,
     lastStartedAt,
     lastCompletedAt,
+    lastAbortedAt,
+    lastFailedAt,
     lastActivityAt
   };
 }

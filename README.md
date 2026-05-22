@@ -13,8 +13,9 @@ when the official ChatGPT/Codex history remains account-wide.
 - Automatically import open Codex conversation tabs for the current workspace.
 - Automatically import local Codex CLI sessions whose metadata points at the
   current workspace.
-- Show a spinner for running local Codex sessions and an unread indicator when
-  a tracked running session completes.
+- Show a spinner for active local Codex sessions, a stopped/failed indicator for
+  ended or inactive local runs, and an unread indicator when a tracked running
+  session completes.
 - Choose whether session grouping and sorting use latest activity time or the
   original session creation time.
 - Show only sessions saved for the active workspace root.
@@ -90,6 +91,10 @@ directories during normal editor activity. Use
 rescan. For performance, the importer reads the beginning of each session file
 and the beginning of `session_index.jsonl`; unusually large or differently
 ordered Codex metadata can require a manual title edit after import.
+Tracked local sessions show as running only while their JSONL file has recent
+activity. Completed turns use the normal session icon, aborted turns show as
+aborted, failed turns show as failed, and sessions with no terminal event stop
+spinning after a short inactivity window.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.
