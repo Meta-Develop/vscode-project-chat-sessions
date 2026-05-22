@@ -19,6 +19,8 @@ when the official ChatGPT/Codex history remains account-wide.
 - Choose whether session grouping and sorting use latest activity time or the
   original session creation time.
 - Show only sessions saved for the active workspace root.
+- Filter local Codex session lineages from a selected source session, with
+  O2, O1, and Other category views for delegated runs.
 - Open a saved session in the Codex sidebar by clicking it in the Activity Bar
   view, with editor-tab fallback when the Codex sidebar deeplink is unavailable.
 - Rename, copy, and remove saved session shortcuts.
@@ -74,17 +76,20 @@ Automatic import only works for Codex conversations that are open as VS Code
 editor tabs in the same window as the workspace. If nothing appears, run
 `Project Chat Sessions: Import Open Codex Tabs` from the Command Palette after
 opening the Codex conversation tab. Local Codex tabs backed by subagent session
-files or Multi-Agent_Coding_Orchestrator child/worker sessions are ignored.
+files or Multi-Agent_Coding_Orchestrator child/worker sessions are stored when
+their metadata is available, but they stay hidden in the default unfiltered
+tree.
 
 The extension also scans local Codex CLI session metadata under
 `$CODEX_HOME/sessions` or `~/.codex/sessions`. It reads each JSONL file's
 initial `session_meta` record, checks for a user-message record, and uses the
 Codex `thread_name` from `session_index.jsonl` as the session title when
 available. It then imports sessions whose `cwd` matches the current workspace.
-Sessions that were opened but never sent a user message are skipped, as are
-Codex subagent/delegated-worker session files and Multi-Agent_Coding_Orchestrator
-child/worker sessions. If an earlier version saved one of those local auxiliary
-shortcuts, the next local scan drops it from the workspace list.
+Sessions that were opened but never sent a user message are skipped. Local
+Codex subagent/delegated-worker session files and
+Multi-Agent_Coding_Orchestrator child/worker sessions are imported with lineage
+metadata when present, then hidden from the default tree until a lineage filter
+is active.
 Automatic local scans are throttled to avoid repeatedly walking large session
 directories during normal editor activity. Use
 `Project Chat Sessions: Import Local Codex Sessions` to force an immediate
@@ -95,6 +100,13 @@ Tracked local sessions show as running only while their JSONL file has recent
 activity. Completed turns use the normal session icon, aborted turns show as
 aborted, failed turns show as failed, and sessions with no terminal event stop
 spinning after a short inactivity window.
+
+Use `Filter by Codex Lineage` from the `Project Chats` view title to choose a
+source session and then show its full lineage, only O2 root/top-supervisor
+sessions, O1 orchestrator/supervisor/coordinator sessions, or Other worker and
+uncategorized sessions. You can also right-click a session and choose
+`Filter Lineage from Session`. The active filter is shown in the tree message;
+use `Clear Lineage Filter` to return to the normal view.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.
@@ -109,8 +121,9 @@ per workspace root. Automatic import watches VS Code Codex conversation editor
 tabs whose URI uses `openai-codex://route/local/<conversationId>` or
 `openai-codex://route/remote/<conversationId>`.
 
-Local Codex import reads session ID, working directory, timestamp, and Codex
-thread names from local Codex files. If no thread name exists yet, it can fall
-back to the first user message excerpt for the local shortcut title. It does not
-scrape Codex webviews, browser pages, private APIs, hidden account data, or
+Local Codex import reads session ID, working directory, timestamp, parent thread
+ID, thread depth, agent role, agent nickname, and Codex thread names from local
+Codex files when present. If no thread name exists yet, it can fall back to the
+first user message excerpt for the local shortcut title. It does not scrape
+Codex webviews, browser pages, private APIs, hidden account data, or
 account-wide history, and it does not send message text anywhere.

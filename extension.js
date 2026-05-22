@@ -12,6 +12,10 @@ const VIEW_LOCATION_STATE_KEY = 'projectChatSessions.viewLocation';
 const DATE_BASIS_STATE_KEY = 'projectChatSessions.dateBasis';
 const SESSION_DATE_BASIS_LAST_ACTIVITY = 'lastActivity';
 const SESSION_DATE_BASIS_CREATED_AT = 'createdAt';
+const LINEAGE_CATEGORY_ALL = 'all';
+const LINEAGE_CATEGORY_O2 = 'o2';
+const LINEAGE_CATEGORY_O1 = 'o1';
+const LINEAGE_CATEGORY_OTHER = 'other';
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
@@ -19,10 +23,10 @@ const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
 const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 5000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
 const LOCAL_CODEX_RUNNING_STALE_MS = 5 * 60 * 1000;
-// Hide implementation-detail Codex sessions used by Multi-Agent_Coding_Orchestrator:
-// https://github.com/Meta-Develop/Multi-Agent_Coding_Orchestrator
-const LOCAL_CODEX_AUXILIARY_SESSION_PROMPT_MARKERS = [
-  'You are a child orchestrator in an opt-in local Codex CLI supervisor run.',
+const LOCAL_CODEX_O1_PROMPT_MARKERS = [
+  'You are a child orchestrator in an opt-in local Codex CLI supervisor run.'
+];
+const LOCAL_CODEX_OTHER_PROMPT_MARKERS = [
   'You are a worker in an opt-in local Codex CLI supervised run.'
 ];
 
@@ -42,12 +46,44 @@ let extensionContext;
 class SessionTreeProvider {
   constructor(context) {
     this.context = context;
+    this.lineageFilter = undefined;
+    this.treeView = undefined;
     this._onDidChangeTreeData = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._onDidChangeTreeData.event;
   }
 
+  setTreeView(treeView) {
+    this.treeView = treeView;
+    this.updateMessage();
+  }
+
+  async setLineageFilter(filter) {
+    this.lineageFilter = filter;
+    this.updateMessage();
+    await updateLineageFilterContext(Boolean(filter));
+    this.refresh();
+  }
+
+  async clearLineageFilter() {
+    await this.setLineageFilter(undefined);
+  }
+
   refresh() {
+    this.updateMessage();
     this._onDidChangeTreeData.fire();
+  }
+
+  updateMessage() {
+    if (!this.treeView) {
+      return;
+    }
+
+    if (!this.lineageFilter) {
+      this.treeView.message = undefined;
+      return;
+    }
+
+    this.treeView.message = `Lineage: ${this.lineageFilter.sourceTitle} (${labelForLineageCategory(this.lineageFilter.category)})`;
   }
 
   getTreeItem(element) {
@@ -95,13 +131,34 @@ class SessionTreeProvider {
       return element.sessions.map((session) => ({ type: 'session', session }));
     }
 
-    const sessions = getSessions(this.context, workspaceKey);
-    if (sessions.length === 0) {
+    const allSessions = getSessions(this.context, workspaceKey);
+    const sessions = getVisibleSessionsForTree(allSessions, this.lineageFilter);
+    if (allSessions.length === 0) {
       return [
         {
           type: 'empty',
           label: 'No sessions for this workspace',
           description: 'Use + to add a ChatGPT/Codex URL.'
+        }
+      ];
+    }
+
+    if (sessions.length === 0 && this.lineageFilter) {
+      return [
+        {
+          type: 'empty',
+          label: 'No sessions match this lineage filter',
+          description: 'Clear the filter or choose another category.'
+        }
+      ];
+    }
+
+    if (sessions.length === 0) {
+      return [
+        {
+          type: 'empty',
+          label: 'No visible sessions',
+          description: 'Auxiliary local Codex sessions are hidden until lineage filtering is active.'
         }
       ];
     }
@@ -115,11 +172,13 @@ async function activate(context) {
   const provider = new SessionTreeProvider(context);
 
   await updateViewLocationContext(context);
+  await updateLineageFilterContext(false);
   const treeOptions = {
     treeDataProvider: provider,
     showCollapseAll: true
   };
   const activityBarTree = vscode.window.createTreeView('projectChatSessions.sessionsView', treeOptions);
+  provider.setTreeView(activityBarTree);
 
   context.subscriptions.push(
     activityBarTree,
@@ -130,6 +189,12 @@ async function activate(context) {
     vscode.commands.registerCommand('projectChatSessions.setDateBasis', async () => {
       await setDateBasis(context);
       provider.refresh();
+    }),
+    vscode.commands.registerCommand('projectChatSessions.setLineageFilter', async () => {
+      await setLineageFilterFromPicker(context, provider);
+    }),
+    vscode.commands.registerCommand('projectChatSessions.clearLineageFilter', async () => {
+      await provider.clearLineageFilter();
     }),
     vscode.commands.registerCommand('projectChatSessions.addSession', async () => {
       await addSession(context);
@@ -188,6 +253,12 @@ async function activate(context) {
       if (session) {
         await vscode.env.clipboard.writeText(session.url);
         vscode.window.showInformationMessage('Session URL copied.');
+      }
+    }),
+    vscode.commands.registerCommand('projectChatSessions.filterLineageFromSession', async (input) => {
+      const session = unwrapSession(input);
+      if (session) {
+        await setLineageFilterFromSession(provider, session);
       }
     }),
     vscode.commands.registerCommand('projectChatSessions.removeSession', async (input) => {
@@ -268,6 +339,96 @@ async function setDateBasis(context) {
   }
 
   await setStoredDateBasis(context, selected.value);
+}
+
+async function setLineageFilterFromPicker(context, provider) {
+  const workspaceKey = requireWorkspaceKey();
+  if (!workspaceKey) {
+    return;
+  }
+
+  await importLocalCodexSessions(context, { force: true });
+  const sessions = getSessions(context, workspaceKey);
+  if (sessions.length === 0) {
+    vscode.window.showWarningMessage('No sessions are saved for this workspace.');
+    return;
+  }
+
+  const options = sessions.map((session) => {
+    const role = labelForLineageCategory(getSessionLineageRole(session));
+    const date = formatRelativeTime(getSessionDateValue(session));
+    return {
+      label: session.title,
+      description: role,
+      detail: `${date} - ${session.url}`,
+      session
+    };
+  });
+
+  const selected = await vscode.window.showQuickPick(options, {
+    title: 'Filter by Codex Lineage',
+    placeHolder: 'Choose the source session'
+  });
+  if (!selected) {
+    return;
+  }
+
+  await setLineageFilterFromSession(provider, selected.session);
+}
+
+async function setLineageFilterFromSession(provider, session) {
+  const category = await pickLineageCategory();
+  if (!category) {
+    return;
+  }
+
+  const sourceThreadId = getSessionThreadId(session);
+  if (!sourceThreadId) {
+    vscode.window.showWarningMessage('This session does not have a usable thread id for lineage filtering.');
+    return;
+  }
+
+  await provider.setLineageFilter({
+    sourceThreadId,
+    sourceTitle: session.title || sourceThreadId,
+    category
+  });
+}
+
+async function pickLineageCategory() {
+  const options = [
+    {
+      label: 'Full Lineage',
+      value: LINEAGE_CATEGORY_ALL,
+      description: 'Show the selected source session and all descendants.'
+    },
+    {
+      label: 'O2',
+      value: LINEAGE_CATEGORY_O2,
+      description: 'Show root/top-supervisor sessions in the selected lineage.'
+    },
+    {
+      label: 'O1',
+      value: LINEAGE_CATEGORY_O1,
+      description: 'Show orchestrator, supervisor, and coordinator sessions.'
+    },
+    {
+      label: 'Other',
+      value: LINEAGE_CATEGORY_OTHER,
+      description: 'Show worker, researcher, subagent, manual, and uncategorized sessions.'
+    }
+  ];
+
+  const selected = await vscode.window.showQuickPick(options, {
+    title: 'Lineage Category',
+    placeHolder: 'Choose which part of the lineage to show'
+  });
+
+  return selected?.value;
+}
+
+async function updateLineageFilterContext(active) {
+  await vscode.commands.executeCommand('setContext', 'projectChatSessions.hasLineageFilter', active);
 }
 
 async function setStoredDateBasis(context, value) {
@@ -626,6 +787,92 @@ function requireWorkspaceKey() {
   return workspaceKey;
 }
 
+function getVisibleSessionsForTree(sessions, lineageFilter) {
+  if (lineageFilter) {
+    return applyLineageFilter(sessions, lineageFilter);
+  }
+
+  return sessions.filter((session) => !isDefaultHiddenLocalCodexSession(session));
+}
+
+function applyLineageFilter(sessions, lineageFilter) {
+  const sourceThreadId = normalizeThreadId(lineageFilter?.sourceThreadId);
+  if (!sourceThreadId) {
+    return [];
+  }
+
+  const childIdsByParent = new Map();
+  for (const session of sessions) {
+    const threadId = normalizeThreadId(getSessionThreadId(session));
+    const parentThreadId = normalizeThreadId(session.parentThreadId);
+    if (!threadId || !parentThreadId) {
+      continue;
+    }
+
+    const childIds = childIdsByParent.get(parentThreadId) || [];
+    childIds.push(threadId);
+    childIdsByParent.set(parentThreadId, childIds);
+  }
+
+  const lineageIds = new Set();
+  const pending = [sourceThreadId];
+  while (pending.length > 0) {
+    const threadId = pending.pop();
+    if (!threadId || lineageIds.has(threadId)) {
+      continue;
+    }
+
+    lineageIds.add(threadId);
+    for (const childId of childIdsByParent.get(threadId) || []) {
+      pending.push(childId);
+    }
+  }
+
+  return sessions.filter((session) => {
+    const threadId = normalizeThreadId(getSessionThreadId(session));
+    if (!threadId || !lineageIds.has(threadId)) {
+      return false;
+    }
+
+    if (lineageFilter.category === LINEAGE_CATEGORY_ALL) {
+      return true;
+    }
+
+    return getSessionLineageRole(session) === lineageFilter.category;
+  });
+}
+
+function isDefaultHiddenLocalCodexSession(session) {
+  if (!isLocalCodexSession(session)) {
+    return false;
+  }
+
+  if (normalizeThreadId(session.parentThreadId)) {
+    return true;
+  }
+
+  const role = getSessionLineageRole(session);
+  return role === LINEAGE_CATEGORY_O1 || role === LINEAGE_CATEGORY_OTHER;
+}
+
+function isLocalCodexSession(session) {
+  if (session?.kind === 'codex-local' || session?.localFilePath) {
+    return true;
+  }
+
+  const parsed = parseCodexConversationUri(session?.url || '');
+  return parsed?.kind === 'local';
+}
+
+function getSessionThreadId(session) {
+  const parsed = parseCodexConversationUri(session?.url || '');
+  return stringOrUndefined(parsed?.conversationId) || stringOrUndefined(session?.threadId) || stringOrUndefined(session?.id);
+}
+
+function normalizeThreadId(value) {
+  return stringOrUndefined(value)?.toLowerCase();
+}
+
 function groupSessions(sessions) {
   const dateBasis = getSessionDateBasis();
   const buckets = [
@@ -902,9 +1149,8 @@ async function importOpenCodexTabs(context) {
     return 0;
   }
 
-  const removed = await pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey);
   const imported = await importCodexSessionCandidates(context, workspaceKey, discoverOpenCodexSessions());
-  return removed + imported;
+  return imported;
 }
 
 async function importLocalCodexSessions(context, options = {}) {
@@ -913,13 +1159,12 @@ async function importLocalCodexSessions(context, options = {}) {
     return 0;
   }
 
-  const removed = await pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey, options);
   const imported = await importCodexSessionCandidates(
     context,
     workspaceKey,
     discoverLocalCodexSessions(workspaceKey, options)
   );
-  return removed + imported;
+  return imported;
 }
 
 async function importCodexSessionCandidates(context, workspaceKey, discovered) {
@@ -951,6 +1196,9 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
         existing.localFilePath = candidate.localFilePath;
         existingChanged = true;
       }
+      if (mergeSessionLineageMetadata(existing, candidate)) {
+        existingChanged = true;
+      }
       if (mergeSessionStatus(existing, candidate)) {
         existingChanged = true;
       }
@@ -977,7 +1225,12 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
       lastStartedAt: candidate.lastStartedAt,
       lastCompletedAt: candidate.lastCompletedAt,
       lastAbortedAt: candidate.lastAbortedAt,
-      lastFailedAt: candidate.lastFailedAt
+      lastFailedAt: candidate.lastFailedAt,
+      parentThreadId: candidate.parentThreadId,
+      threadDepth: candidate.threadDepth,
+      agentRole: candidate.agentRole,
+      agentNickname: candidate.agentNickname,
+      lineageRole: candidate.lineageRole
     });
     changed += 1;
   }
@@ -1065,6 +1318,17 @@ function mergeSessionStatus(session, candidate) {
   return changed;
 }
 
+function mergeSessionLineageMetadata(session, candidate) {
+  let changed = false;
+  for (const field of ['parentThreadId', 'threadDepth', 'agentRole', 'agentNickname', 'lineageRole']) {
+    if (candidate[field] !== undefined && session[field] !== candidate[field]) {
+      session[field] = candidate[field];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function shouldUpdateExistingTitle(existing, candidate) {
   if (!candidate.title || existing.title === candidate.title || existing.titleSource === 'manual') {
     return false;
@@ -1083,46 +1347,6 @@ function shouldUpdateExistingTitle(existing, candidate) {
 
 function isGenericCodexTitle(value) {
   return /^Codex(?: session| [0-9a-f]{8}| \d{4}-\d{2}-\d{2} \d{2}:\d{2})$/i.test(value || '');
-}
-
-async function pruneImportedLocalCodexAuxiliarySessions(context, workspaceKey, options = {}) {
-  const sessions = getSessions(context, workspaceKey);
-  const localMetaById = readLocalCodexSessionMetaById(undefined, options);
-  const retained = [];
-  let removed = 0;
-
-  for (const session of sessions) {
-    if (isImportedLocalCodexAuxiliarySession(session, localMetaById)) {
-      removed += 1;
-      continue;
-    }
-
-    retained.push(session);
-  }
-
-  if (removed > 0) {
-    await setSessions(context, workspaceKey, retained);
-  }
-
-  return removed;
-}
-
-function isImportedLocalCodexAuxiliarySession(session, localMetaById = readLocalCodexSessionMetaById()) {
-  if (!session) {
-    return false;
-  }
-
-  const parsed = parseCodexConversationUri(session.url);
-  if (!parsed || parsed.kind !== 'local') {
-    return false;
-  }
-
-  let meta = (session.localFilePath ? readLocalCodexSessionMeta(session.localFilePath) : undefined) ||
-    localMetaById.get(parsed.conversationId);
-  if (!meta?.firstUserMessage) {
-    meta = getLocalCodexSessionMetaByConversationId(parsed.conversationId) || meta;
-  }
-  return isLocalCodexAuxiliarySessionMeta(meta);
 }
 
 function isNewerDateString(candidate, current) {
@@ -1199,9 +1423,7 @@ function codexSessionCandidateFromUri(uri, label) {
   const localMeta = parsed.kind === 'local'
     ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
     : undefined;
-  if (isLocalCodexAuxiliarySessionMeta(localMeta)) {
-    return undefined;
-  }
+  const lineage = localMeta ? lineageFieldsFromLocalCodexMeta(localMeta) : {};
 
   return {
     conversationId: parsed.conversationId,
@@ -1209,7 +1431,8 @@ function codexSessionCandidateFromUri(uri, label) {
     url: uri.toString(),
     kind: localMeta ? 'codex-local' : undefined,
     localFilePath: localMeta?.localFilePath,
-    titleSource: 'codex-tab'
+    titleSource: 'codex-tab',
+    ...lineage
   };
 }
 
@@ -1241,10 +1464,6 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       continue;
     }
 
-    if (isLocalCodexAuxiliarySessionMeta(meta)) {
-      continue;
-    }
-
     if (normalizePathForComparison(meta.cwd) !== workspacePath) {
       continue;
     }
@@ -1267,6 +1486,7 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
       createdAt,
       updatedAt,
       localFilePath: meta.localFilePath,
+      ...lineageFieldsFromLocalCodexMeta(meta),
       status: status.status,
       lastStartedAt: status.lastStartedAt,
       lastCompletedAt: status.lastCompletedAt,
@@ -1464,6 +1684,7 @@ function readLocalCodexSessionMeta(filePath) {
       timestamp: stringOrUndefined(record.payload.timestamp),
       source: record.payload.source,
       threadSource: stringOrUndefined(record.payload.thread_source),
+      ...extractLocalCodexLineageMetadata(record.payload),
       hasUserMessage,
       firstUserMessage
     };
@@ -1476,33 +1697,277 @@ function readLocalCodexSessionMeta(filePath) {
   return meta ? { ...meta, hasUserMessage, firstUserMessage } : undefined;
 }
 
-function isLocalCodexAuxiliarySessionMeta(meta) {
-  if (!meta) {
-    return false;
-  }
+function extractLocalCodexLineageMetadata(payload) {
+  const source = payload?.source;
+  const threadSpawn = firstObject(
+    source?.subagent?.thread_spawn,
+    source?.thread_spawn,
+    source?.threadSpawn,
+    payload?.subagent?.thread_spawn,
+    payload?.thread_spawn,
+    payload?.threadSpawn,
+    payload
+  );
 
-  if (meta.threadSource === 'subagent') {
-    return true;
-  }
+  const roleSource = firstObject(
+    source?.subagent,
+    source?.thread_spawn,
+    source?.threadSpawn,
+    payload?.subagent,
+    payload?.thread_spawn,
+    payload?.threadSpawn,
+    payload
+  );
 
-  const source = meta.source;
-  if (typeof source === 'string') {
-    return source.toLowerCase() === 'subagent' || isLocalCodexOrchestratorSessionMeta(meta);
-  }
-
-  return Boolean(
-    source &&
-    typeof source === 'object' &&
-    (source.subagent || source.thread_spawn || source.threadSpawn)
-  ) || isLocalCodexOrchestratorSessionMeta(meta);
+  return {
+    parentThreadId: firstString(
+      threadSpawn?.parent_thread_id,
+      threadSpawn?.parentThreadId,
+      threadSpawn?.parent_id,
+      threadSpawn?.parentId,
+      source?.parent_thread_id,
+      source?.parentThreadId,
+      payload?.parent_thread_id,
+      payload?.parentThreadId
+    ),
+    threadDepth: firstNumber(
+      threadSpawn?.depth,
+      source?.depth,
+      payload?.depth,
+      payload?.thread_depth,
+      payload?.threadDepth
+    ),
+    agentRole: firstString(
+      threadSpawn?.agent_role,
+      threadSpawn?.agentRole,
+      threadSpawn?.role,
+      roleSource?.agent_role,
+      roleSource?.agentRole,
+      roleSource?.role,
+      source?.agent_role,
+      source?.agentRole,
+      source?.role,
+      payload?.agent_role,
+      payload?.agentRole,
+      payload?.role
+    ),
+    agentNickname: firstString(
+      threadSpawn?.agent_nickname,
+      threadSpawn?.agentNickname,
+      threadSpawn?.nickname,
+      roleSource?.agent_nickname,
+      roleSource?.agentNickname,
+      roleSource?.nickname,
+      source?.agent_nickname,
+      source?.agentNickname,
+      source?.nickname,
+      payload?.agent_nickname,
+      payload?.agentNickname,
+      payload?.nickname
+    )
+  };
 }
 
-function isLocalCodexOrchestratorSessionMeta(meta) {
-  const firstUserMessage = stringOrUndefined(meta?.firstUserMessage);
+function lineageFieldsFromLocalCodexMeta(meta) {
+  return {
+    parentThreadId: meta.parentThreadId,
+    threadDepth: meta.threadDepth,
+    agentRole: meta.agentRole,
+    agentNickname: meta.agentNickname,
+    lineageRole: classifyLocalCodexLineageRole(meta)
+  };
+}
+
+function classifyLocalCodexLineageRole(meta) {
+  if (!normalizeThreadId(meta?.parentThreadId) || isRootLocalCodexThreadSource(meta?.threadSource)) {
+    return LINEAGE_CATEGORY_O2;
+  }
+
+  return classifyExplicitStructuredLineageRole(meta) ||
+    classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
+    classifyStructuredOtherLineageRole(meta) ||
+    LINEAGE_CATEGORY_OTHER;
+}
+
+function classifyExplicitStructuredLineageRole(meta) {
+  const roleText = normalizeLineageSignalText([
+    meta?.threadSource,
+    meta?.agentRole,
+    meta?.agentNickname
+  ]);
+  const sourceText = normalizeLineageSignalText([
+    typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
+  ]);
+  const structuredText = [roleText, sourceText].filter(Boolean).join(' ');
+
+  if (hasO2LineageSignal(structuredText)) {
+    return LINEAGE_CATEGORY_O2;
+  }
+
+  if (hasO1LineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  if (hasO1LineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  return undefined;
+}
+
+function classifyStructuredOtherLineageRole(meta) {
+  const roleText = normalizeLineageSignalText([
+    meta?.agentRole,
+    meta?.agentNickname
+  ]);
+  const sourceText = normalizeLineageSignalText([
+    typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
+  ]);
+
+  if (hasOtherLineageSignal(roleText) || hasOtherLineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  return undefined;
+}
+
+function classifyPromptDeclaredLineageRole(value) {
+  const text = stringOrUndefined(value);
+  if (!text) {
+    return undefined;
+  }
+
+  const roleMatch = /^\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
+  if (roleMatch) {
+    const role = normalizeLineageSignalText([roleMatch[1]]);
+    if (hasO2LineageSignal(role)) {
+      return LINEAGE_CATEGORY_O2;
+    }
+    if (hasO1LineageSignal(role)) {
+      return LINEAGE_CATEGORY_O1;
+    }
+    if (hasOtherLineageSignal(role)) {
+      return LINEAGE_CATEGORY_OTHER;
+    }
+  }
+
+  if (LOCAL_CODEX_O1_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  if (LOCAL_CODEX_OTHER_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  return undefined;
+}
+
+function normalizeLineageSignalText(values) {
+  return values.filter(Boolean).join(' ').toLowerCase();
+}
+
+function hasO2LineageSignal(text) {
   return Boolean(
-    firstUserMessage &&
-    LOCAL_CODEX_AUXILIARY_SESSION_PROMPT_MARKERS.some((marker) => firstUserMessage.includes(marker))
+    text &&
+    (
+      /\bo2\b/.test(text) ||
+      /\bo2(?:agent|orchestrator|supervisor|coordinator)\b/.test(text) ||
+      /top[\s_-]*supervisor|topsupervisor/.test(text)
+    )
   );
+}
+
+function hasO1LineageSignal(text) {
+  return Boolean(
+    text &&
+    (
+      /\bo1\b/.test(text) ||
+      /\bo1(?:agent|orchestrator|supervisor|coordinator)\b/.test(text) ||
+      /child[\s_-]*orchestrator/.test(text) ||
+      /orchestrator|supervisor|coordinator/.test(text)
+    )
+  );
+}
+
+function hasOtherLineageSignal(text) {
+  return Boolean(
+    text &&
+    /worker|researcher|explorer/.test(text)
+  );
+}
+
+function isRootLocalCodexThreadSource(value) {
+  const normalized = stringOrUndefined(value)?.toLowerCase();
+  return normalized === 'user' || normalized === 'root';
+}
+
+function getSessionLineageRole(session) {
+  const role = normalizeLineageRole(session?.lineageRole);
+  if (role) {
+    return role;
+  }
+
+  if (isLocalCodexSession(session) && !normalizeThreadId(session?.parentThreadId)) {
+    return LINEAGE_CATEGORY_O2;
+  }
+
+  return LINEAGE_CATEGORY_OTHER;
+}
+
+function normalizeLineageRole(value) {
+  const normalized = stringOrUndefined(value)?.toLowerCase();
+  if (
+    normalized === LINEAGE_CATEGORY_O2 ||
+    normalized === LINEAGE_CATEGORY_O1 ||
+    normalized === LINEAGE_CATEGORY_OTHER
+  ) {
+    return normalized;
+  }
+  return undefined;
+}
+
+function labelForLineageCategory(value) {
+  switch (value) {
+    case LINEAGE_CATEGORY_ALL:
+      return 'Full Lineage';
+    case LINEAGE_CATEGORY_O2:
+      return 'O2';
+    case LINEAGE_CATEGORY_O1:
+      return 'O1';
+    case LINEAGE_CATEGORY_OTHER:
+      return 'Other';
+    default:
+      return 'Other';
+  }
+}
+
+function firstObject(...values) {
+  return values.find((value) => value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    const text = stringOrUndefined(value);
+    if (text) {
+      return text;
+    }
+  }
+  return undefined;
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
 }
 
 function extractLocalCodexUserMessageText(line) {

@@ -2,7 +2,7 @@
   "name": "project-chat-sessions",
   "displayName": "Project Chat Sessions",
   "description": "Workspace-scoped shortcuts for ChatGPT/Codex conversation URLs.",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "publisher": "Meta-Develop",
   "author": "Meta-Develop",
   "license": "AGPL-3.0-or-later",
@@ -42,6 +42,9 @@
     "onCommand:projectChatSessions.setProjectHome",
     "onCommand:projectChatSessions.setViewLocation",
     "onCommand:projectChatSessions.setDateBasis",
+    "onCommand:projectChatSessions.setLineageFilter",
+    "onCommand:projectChatSessions.clearLineageFilter",
+    "onCommand:projectChatSessions.filterLineageFromSession",
     "onCommand:projectChatSessions.refresh"
   ],
   "main": "./extension.js",
@@ -105,6 +108,21 @@
         "icon": "$(calendar)"
       },
       {
+        "command": "projectChatSessions.setLineageFilter",
+        "title": "Filter by Codex Lineage",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "projectChatSessions.clearLineageFilter",
+        "title": "Clear Lineage Filter",
+        "icon": "$(close)"
+      },
+      {
+        "command": "projectChatSessions.filterLineageFromSession",
+        "title": "Filter Lineage from Session",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
         "command": "projectChatSessions.openSession",
         "title": "Open Session"
       },
@@ -165,6 +183,16 @@
           "command": "projectChatSessions.setDateBasis",
           "when": "view == projectChatSessions.sessionsView",
           "group": "navigation@8"
+        },
+        {
+          "command": "projectChatSessions.setLineageFilter",
+          "when": "view == projectChatSessions.sessionsView",
+          "group": "navigation@9"
+        },
+        {
+          "command": "projectChatSessions.clearLineageFilter",
+          "when": "view == projectChatSessions.sessionsView && projectChatSessions.hasLineageFilter",
+          "group": "navigation@10"
         }
       ],
       "view/item/context": [
@@ -182,6 +210,11 @@
           "command": "projectChatSessions.copySessionUrl",
           "when": "view == projectChatSessions.sessionsView && viewItem == session",
           "group": "inline@3"
+        },
+        {
+          "command": "projectChatSessions.filterLineageFromSession",
+          "when": "view == projectChatSessions.sessionsView && viewItem == session",
+          "group": "navigation@1"
         },
         {
           "command": "projectChatSessions.removeSession",
@@ -238,12 +271,12 @@
         "projectChatSessions.autoImportCodexTabs": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add open Codex conversation tabs to the current workspace session list. Local subagent and orchestrator child/worker tabs are ignored when their session metadata is available."
+          "description": "Automatically add open Codex conversation tabs to the current workspace session list. Local subagent and orchestrator child/worker tabs are stored when metadata is available, then hidden until a lineage filter is active."
         },
         "projectChatSessions.autoImportLocalCodexSessions": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, Codex thread names are read locally for session titles when available, and subagent plus orchestrator child/worker sessions are ignored."
+          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Scans are throttled, Codex thread names are read locally for session titles when available, and subagent plus orchestrator child/worker sessions are hidden until a lineage filter is active."
         },
         "projectChatSessions.localCodexSessionsPath": {
           "type": "string",

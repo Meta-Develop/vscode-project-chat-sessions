@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.14
+
+- Added Codex lineage filtering from a selected source session with Full, O2,
+  O1, and Other views.
+- Store local subagent/delegated-worker sessions with lineage metadata and hide
+  them from the default tree until lineage filtering is active.
+- Added local Codex session metadata support for parent session, depth, agent
+  role, and agent nickname.
+- Include local Codex status icons for running sessions and completed unread
+  sessions.
+
 ## 0.0.13
 
 - Added a storage fallback for the date basis picker when VS Code has not
