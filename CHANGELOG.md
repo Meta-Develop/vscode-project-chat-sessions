@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.15
+
+- Disable automatic local Codex session scanning by default while preserving
+  manual import and opt-in automatic scans.
+- Refresh saved local Codex session status from tracked files independently of
+  automatic local import.
+- Resolve open local Codex tabs to matching local session files with bounded
+  ID-targeted lookup and mtime-cached status refreshes.
+- Use the latest semantic status event after the latest `task_started` event
+  for local Codex running, completed, aborted, and failed indicators.
+- Add global O2, O1, and Other Codex lineage role filters.
+
 ## 0.0.14
 
 - Added Codex lineage filtering from a selected source session with Full, O2,

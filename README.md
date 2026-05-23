@@ -11,8 +11,8 @@ when the official ChatGPT/Codex history remains account-wide.
 
 - Add a ChatGPT/Codex conversation URL to the current workspace.
 - Automatically import open Codex conversation tabs for the current workspace.
-- Automatically import local Codex CLI sessions whose metadata points at the
-  current workspace.
+- Manually import local Codex CLI sessions whose metadata points at the current
+  workspace, with opt-in automatic local import.
 - Show a spinner for active local Codex sessions, a stopped/failed indicator for
   ended or inactive local runs, and an unread indicator when a tracked running
   session completes.
@@ -75,38 +75,49 @@ extension to create a new panel and falls back to the default new-session URL.
 Automatic import only works for Codex conversations that are open as VS Code
 editor tabs in the same window as the workspace. If nothing appears, run
 `Project Chat Sessions: Import Open Codex Tabs` from the Command Palette after
-opening the Codex conversation tab. Local Codex tabs backed by subagent session
-files or Multi-Agent_Coding_Orchestrator child/worker sessions are stored when
-their metadata is available, but they stay hidden in the default unfiltered
-tree.
+opening the Codex conversation tab. For open local Codex tabs, the extension can
+attach the matching local session file by session ID with a bounded recent-date
+lookup, without enabling broad local session scanning. Local Codex tabs backed
+by subagent session files or Multi-Agent_Coding_Orchestrator child/worker
+sessions are stored when their metadata is available, but they stay hidden in
+the default unfiltered tree.
 
-The extension also scans local Codex CLI session metadata under
-`$CODEX_HOME/sessions` or `~/.codex/sessions`. It reads each JSONL file's
-initial `session_meta` record, checks for a user-message record, and uses the
-Codex `thread_name` from `session_index.jsonl` as the session title when
-available. It then imports sessions whose `cwd` matches the current workspace.
-Sessions that were opened but never sent a user message are skipped. Local
-Codex subagent/delegated-worker session files and
-Multi-Agent_Coding_Orchestrator child/worker sessions are imported with lineage
-metadata when present, then hidden from the default tree until a lineage filter
-is active.
-Automatic local scans are throttled to avoid repeatedly walking large session
-directories during normal editor activity. Use
-`Project Chat Sessions: Import Local Codex Sessions` to force an immediate
-rescan. For performance, the importer reads the beginning of each session file
-and the beginning of `session_index.jsonl`; unusually large or differently
-ordered Codex metadata can require a manual title edit after import.
+The extension can also scan local Codex CLI session metadata under
+`$CODEX_HOME/sessions` or `~/.codex/sessions`. Automatic local scanning is
+disabled by default so VS Code startup does not walk large Codex session
+directories. Use `Project Chat Sessions: Import Local Codex Sessions` to run a
+manual import, or enable
+`projectChatSessions.autoImportLocalCodexSessions` to opt in to throttled
+automatic scans.
+
+Local import reads each JSONL file's initial `session_meta` record, checks for
+a user-message record, and uses the Codex `thread_name` from
+`session_index.jsonl` as the session title when available. It then imports
+sessions whose `cwd` matches the current workspace. Sessions that were opened
+but never sent a user message are skipped. Local Codex subagent/delegated-worker
+session files and Multi-Agent_Coding_Orchestrator child/worker sessions are
+imported with lineage metadata when present, then hidden from the default tree
+until a lineage filter is active. For performance, the importer reads the
+beginning of each session file and the beginning of `session_index.jsonl`;
+unusually large or differently ordered Codex metadata can require a manual
+title edit after import.
 Tracked local sessions show as running only while their JSONL file has recent
-activity. Completed turns use the normal session icon, aborted turns show as
-aborted, failed turns show as failed, and sessions with no terminal event stop
-spinning after a short inactivity window.
+file activity after the latest `task_started` event. Completed turns use the
+normal session icon, aborted turns show as aborted, failed turns show as
+failed, and sessions with no terminal event stop spinning after a short
+inactivity window. Status refresh for already imported local sessions does not
+require automatic local import to be enabled and does not scan the Codex
+sessions directory.
 
-Use `Filter by Codex Lineage` from the `Project Chats` view title to choose a
-source session and then show its full lineage, only O2 root/top-supervisor
-sessions, O1 orchestrator/supervisor/coordinator sessions, or Other worker and
-uncategorized sessions. You can also right-click a session and choose
-`Filter Lineage from Session`. The active filter is shown in the tree message;
-use `Clear Lineage Filter` to return to the normal view.
+Use `Show O2 Codex Sessions`, `Show O1 Codex Sessions`, or
+`Show Other Codex Sessions` from the `Project Chats` view title to filter all
+saved local Codex sessions by role without choosing a source session. Use
+`Filter by Codex Lineage` to choose a source session and then show its full
+lineage, only O2 root/top-supervisor sessions, O1
+orchestrator/supervisor/coordinator sessions, or Other worker and uncategorized
+sessions. You can also right-click a session and choose `Filter Lineage from
+Session`. The active filter is shown in the tree message; use
+`Clear Lineage Filter` to return to the normal view.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.

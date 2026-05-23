@@ -20,9 +20,10 @@ const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
 const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
-const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 5000;
+const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 45000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
-const LOCAL_CODEX_RUNNING_STALE_MS = 5 * 60 * 1000;
+const LOCAL_CODEX_RUNNING_STALE_MS = 90 * 1000;
+const LOCAL_CODEX_TARGETED_LOOKUP_DAYS = 45;
 const LOCAL_CODEX_O1_PROMPT_MARKERS = [
   'You are a child orchestrator in an opt-in local Codex CLI supervisor run.'
 ];
@@ -41,6 +42,8 @@ const localCodexSessionMetaCache = {
   scannedAt: 0,
   byId: new Map()
 };
+const localCodexStatusMtimeCache = new Map();
+const localCodexTargetedFileCache = new Map();
 let extensionContext;
 
 class SessionTreeProvider {
@@ -83,7 +86,13 @@ class SessionTreeProvider {
       return;
     }
 
-    this.treeView.message = `Lineage: ${this.lineageFilter.sourceTitle} (${labelForLineageCategory(this.lineageFilter.category)})`;
+    const categoryLabel = labelForLineageCategory(this.lineageFilter.category);
+    if (this.lineageFilter.sourceThreadId) {
+      this.treeView.message = `Lineage: ${this.lineageFilter.sourceTitle} (${categoryLabel})`;
+      return;
+    }
+
+    this.treeView.message = `Lineage role filter: ${categoryLabel}`;
   }
 
   getTreeItem(element) {
@@ -192,6 +201,15 @@ async function activate(context) {
     }),
     vscode.commands.registerCommand('projectChatSessions.setLineageFilter', async () => {
       await setLineageFilterFromPicker(context, provider);
+    }),
+    vscode.commands.registerCommand('projectChatSessions.showO2LineageSessions', async () => {
+      await setLineageRoleFilter(provider, LINEAGE_CATEGORY_O2);
+    }),
+    vscode.commands.registerCommand('projectChatSessions.showO1LineageSessions', async () => {
+      await setLineageRoleFilter(provider, LINEAGE_CATEGORY_O1);
+    }),
+    vscode.commands.registerCommand('projectChatSessions.showOtherLineageSessions', async () => {
+      await setLineageRoleFilter(provider, LINEAGE_CATEGORY_OTHER);
     }),
     vscode.commands.registerCommand('projectChatSessions.clearLineageFilter', async () => {
       await provider.clearLineageFilter();
@@ -347,7 +365,6 @@ async function setLineageFilterFromPicker(context, provider) {
     return;
   }
 
-  await importLocalCodexSessions(context, { force: true });
   const sessions = getSessions(context, workspaceKey);
   if (sessions.length === 0) {
     vscode.window.showWarningMessage('No sessions are saved for this workspace.');
@@ -374,6 +391,12 @@ async function setLineageFilterFromPicker(context, provider) {
   }
 
   await setLineageFilterFromSession(provider, selected.session);
+}
+
+async function setLineageRoleFilter(provider, category) {
+  await provider.setLineageFilter({
+    category
+  });
 }
 
 async function setLineageFilterFromSession(provider, session) {
@@ -798,7 +821,10 @@ function getVisibleSessionsForTree(sessions, lineageFilter) {
 function applyLineageFilter(sessions, lineageFilter) {
   const sourceThreadId = normalizeThreadId(lineageFilter?.sourceThreadId);
   if (!sourceThreadId) {
-    return [];
+    if (lineageFilter?.category === LINEAGE_CATEGORY_ALL) {
+      return sessions;
+    }
+    return sessions.filter((session) => getSessionLineageRole(session) === lineageFilter?.category);
   }
 
   const childIdsByParent = new Map();
@@ -1081,13 +1107,14 @@ function startAutoImport(context, provider) {
   }, 500);
 
   const runLocalStatusRefresh = debounce(async () => {
-    if (!isAutoImportLocalCodexSessionsEnabled()) {
+    if (!hasRefreshableLocalCodexSessions(context)) {
       return;
     }
     refreshWhenChanged(await refreshLocalCodexSessionStatuses(context));
   }, 500);
 
   runOpenTabs();
+  runLocalStatusRefresh();
   const localScanTimeout = setTimeout(runLocalSessions, 2000);
   const localScanInterval = setInterval(runLocalSessions, LOCAL_CODEX_SCAN_MIN_INTERVAL_MS);
   const localStatusInterval = setInterval(runLocalStatusRefresh, LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS);
@@ -1258,21 +1285,46 @@ async function refreshLocalCodexSessionStatuses(context) {
     }
 
     const filePath = session.localFilePath;
-    if (!filePath || !fs.existsSync(filePath)) {
+    if (!filePath) {
       continue;
     }
 
-    const status = readLocalCodexSessionStatus(filePath);
-    if (!status.status) {
+    const stat = statLocalFile(filePath);
+    if (!stat) {
       continue;
     }
 
-    if (mergeSessionStatus(session, status)) {
+    const mtimeMs = Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : 0;
+    if (localCodexStatusMtimeCache.get(filePath) === mtimeMs) {
+      const staleStatus = staleStatusFromExistingSessionMtime(session, stat);
+      if (!staleStatus.status) {
+        continue;
+      }
+
+      if (mergeSessionStatus(session, staleStatus)) {
+        changed += 1;
+      }
+      continue;
+    }
+
+    localCodexStatusMtimeCache.set(filePath, mtimeMs);
+    const status = readLocalCodexSessionStatus(filePath, stat);
+    const effectiveStatus = status.status
+      ? status
+      : staleStatusFromExistingSessionMtime(session, stat);
+    if (!effectiveStatus.status) {
+      continue;
+    }
+
+    if (mergeSessionStatus(session, effectiveStatus)) {
       changed += 1;
     }
 
-    if (status.lastActivityAt && isNewerDateString(status.lastActivityAt, session.updatedAt || session.createdAt)) {
-      session.updatedAt = status.lastActivityAt;
+    if (
+      effectiveStatus.lastActivityAt &&
+      isNewerDateString(effectiveStatus.lastActivityAt, session.updatedAt || session.createdAt)
+    ) {
+      session.updatedAt = effectiveStatus.lastActivityAt;
       changed += 1;
     }
   }
@@ -1282,6 +1334,43 @@ async function refreshLocalCodexSessionStatuses(context) {
   }
 
   return changed;
+}
+
+function staleStatusFromExistingSessionMtime(session, stat) {
+  if (session?.status !== 'running' && session?.status !== 'stale') {
+    return {};
+  }
+
+  const activeAt = Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : undefined;
+  if (!activeAt || Date.now() - activeAt <= LOCAL_CODEX_RUNNING_STALE_MS) {
+    return {};
+  }
+
+  return {
+    status: 'stale',
+    lastStartedAt: session.lastStartedAt,
+    lastActivityAt: new Date(activeAt).toISOString()
+  };
+}
+
+function statLocalFile(filePath) {
+  try {
+    return fs.statSync(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasRefreshableLocalCodexSessions(context) {
+  const workspaceKey = getWorkspaceKey();
+  if (!workspaceKey) {
+    return false;
+  }
+
+  return getSessions(context, workspaceKey).some((session) => {
+    const parsed = parseCodexConversationUri(session.url);
+    return parsed?.kind === 'local' && Boolean(session.localFilePath);
+  });
 }
 
 function mergeSessionStatus(session, candidate) {
@@ -1420,19 +1509,46 @@ function codexSessionCandidateFromUri(uri, label) {
     return undefined;
   }
 
-  const localMeta = parsed.kind === 'local'
-    ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
-    : undefined;
+  const localDetails = getLocalCodexDetailsForOpenTab(parsed);
+  const localMeta = localDetails.meta;
   const lineage = localMeta ? lineageFieldsFromLocalCodexMeta(localMeta) : {};
 
   return {
     conversationId: parsed.conversationId,
     title: label || `Codex ${parsed.conversationId.slice(0, 8)}`,
     url: uri.toString(),
-    kind: localMeta ? 'codex-local' : undefined,
-    localFilePath: localMeta?.localFilePath,
+    kind: localDetails.localFilePath ? 'codex-local' : undefined,
+    localFilePath: localDetails.localFilePath,
     titleSource: 'codex-tab',
+    status: localDetails.status?.status,
+    lastStartedAt: localDetails.status?.lastStartedAt,
+    lastCompletedAt: localDetails.status?.lastCompletedAt,
+    lastAbortedAt: localDetails.status?.lastAbortedAt,
+    lastFailedAt: localDetails.status?.lastFailedAt,
     ...lineage
+  };
+}
+
+function getLocalCodexDetailsForOpenTab(parsed) {
+  if (parsed?.kind !== 'local') {
+    return {};
+  }
+
+  const meta = isAutoImportLocalCodexSessionsEnabled()
+    ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
+    : undefined;
+  const localFilePath = meta?.localFilePath ||
+    findLocalCodexSessionFileByConversationId(parsed.conversationId)?.path;
+  if (!localFilePath) {
+    return { meta };
+  }
+
+  const stat = statLocalFile(localFilePath);
+  const status = stat ? readLocalCodexSessionStatus(localFilePath, stat) : {};
+  return {
+    meta: meta || readLocalCodexSessionMeta(localFilePath),
+    localFilePath,
+    status
   };
 }
 
@@ -1513,6 +1629,7 @@ function invalidateLocalCodexSessionMetaCache() {
   localCodexSessionMetaCache.key = undefined;
   localCodexSessionMetaCache.scannedAt = 0;
   localCodexSessionMetaCache.byId = new Map();
+  localCodexTargetedFileCache.clear();
 }
 
 function readLocalCodexSessionIndex(sessionsDir) {
@@ -1637,6 +1754,94 @@ function getLocalCodexSessionMetaByConversationId(conversationId) {
   }
 
   return meta;
+}
+
+function findLocalCodexSessionFileByConversationId(conversationId) {
+  const id = stringOrUndefined(conversationId);
+  const sessionsDir = getLocalCodexSessionsDir();
+  if (!id || !sessionsDir || !fs.existsSync(sessionsDir)) {
+    return undefined;
+  }
+
+  const cacheKey = `${normalizePathForComparison(sessionsDir)}\n${id}`;
+  const now = Date.now();
+  const cached = localCodexTargetedFileCache.get(cacheKey);
+  if (cached && now - cached.scannedAt < LOCAL_CODEX_SCAN_MIN_INTERVAL_MS) {
+    if (!cached.path) {
+      return undefined;
+    }
+
+    const stat = statLocalFile(cached.path);
+    if (stat) {
+      return { path: cached.path, mtimeMs: stat.mtimeMs };
+    }
+  }
+
+  const found = findLocalCodexSessionFileInBoundedDateDirs(sessionsDir, id);
+  localCodexTargetedFileCache.set(cacheKey, {
+    path: found?.path,
+    scannedAt: now
+  });
+  return found;
+}
+
+function findLocalCodexSessionFileInBoundedDateDirs(sessionsDir, id) {
+  for (const dir of recentLocalCodexSessionDirs(sessionsDir, LOCAL_CODEX_TARGETED_LOOKUP_DAYS)) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl') || !entry.name.includes(id)) {
+        continue;
+      }
+
+      const filePath = path.join(dir, entry.name);
+      const stat = statLocalFile(filePath);
+      if (!stat) {
+        continue;
+      }
+
+      const meta = readLocalCodexSessionMeta(filePath);
+      if (meta?.id !== id) {
+        continue;
+      }
+
+      return { path: filePath, mtimeMs: stat.mtimeMs };
+    }
+  }
+
+  return undefined;
+}
+
+function recentLocalCodexSessionDirs(sessionsDir, days) {
+  const dirs = [sessionsDir];
+  const seen = new Set(dirs.map((dir) => normalizePathForComparison(dir)));
+  const addDir = (dir) => {
+    const normalized = normalizePathForComparison(dir);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      dirs.push(dir);
+    }
+  };
+
+  for (let offset = 0; offset < days; offset += 1) {
+    const date = new Date(Date.now() - offset * 24 * 60 * 60 * 1000);
+    const year = String(date.getFullYear());
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    addDir(path.join(sessionsDir, year, month, day));
+
+    const utcYear = String(date.getUTCFullYear());
+    const utcMonth = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const utcDay = String(date.getUTCDate()).padStart(2, '0');
+    addDir(path.join(sessionsDir, utcYear, utcMonth, utcDay));
+  }
+
+  return dirs;
 }
 
 function readLocalCodexSessionMeta(filePath) {
@@ -2058,9 +2263,14 @@ function readFileSuffix(filePath, maxBytes) {
   }
 }
 
-function readLocalCodexSessionStatus(filePath) {
+function readLocalCodexSessionStatus(filePath, fileStat) {
   const text = readFileSuffix(filePath, LOCAL_CODEX_STATUS_SUFFIX_BYTES);
   if (!text) {
+    return {};
+  }
+
+  const stat = fileStat || statLocalFile(filePath);
+  if (!stat) {
     return {};
   }
 
@@ -2111,14 +2321,14 @@ function readLocalCodexSessionStatus(filePath) {
       if (eventAt) {
         lastCompletedAt = eventAt;
       }
-      if (lineOrder >= lastStartedOrder && lastTurnStatusEvent?.type !== 'failed') {
+      if (lineOrder >= lastStartedOrder) {
         lastTurnStatusEvent = { type: 'completed', at: eventAt, order: lineOrder };
       }
     } else if (record.payload.type === 'turn_aborted') {
       if (eventAt) {
         lastAbortedAt = eventAt;
       }
-      if (lineOrder >= lastStartedOrder && lastTurnStatusEvent?.type !== 'failed') {
+      if (lineOrder >= lastStartedOrder) {
         lastTurnStatusEvent = { type: 'aborted', at: eventAt, order: lineOrder };
       }
     } else if (record.payload.type === 'error') {
@@ -2139,7 +2349,7 @@ function readLocalCodexSessionStatus(filePath) {
   } else if (lastTurnStatusEvent?.type === 'failed') {
     status = 'failed';
   } else if (lastStartedAt) {
-    const activeAt = Date.parse(lastActivityAt || lastStartedAt);
+    const activeAt = Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : Date.parse(lastStartedAt);
     status = Date.now() - activeAt > LOCAL_CODEX_RUNNING_STALE_MS ? 'stale' : 'running';
   } else if (lastCompletedAt) {
     status = 'completed';
@@ -2347,7 +2557,7 @@ function isAutoImportCodexTabsEnabled() {
 function isAutoImportLocalCodexSessionsEnabled() {
   return vscode.workspace
     .getConfiguration('projectChatSessions')
-    .get('autoImportLocalCodexSessions', true);
+    .get('autoImportLocalCodexSessions', false);
 }
 
 function debounce(fn, delayMs) {
