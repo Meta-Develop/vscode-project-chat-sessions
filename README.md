@@ -113,8 +113,8 @@ Use `Show O2 Codex Sessions`, `Show O1 Codex Sessions`, or
 `Show Other Codex Sessions` from the `Project Chats` view title to filter all
 saved local Codex sessions by role without choosing a source session. Use
 `Filter by Codex Lineage` to choose a source session and then show its full
-lineage, only O2 root/top-supervisor sessions, O1
-orchestrator/supervisor/coordinator sessions, or Other worker and uncategorized
+lineage, O2 root/top-supervisor or uncategorized local Codex sessions, O1
+orchestrator/supervisor/coordinator sessions, or Other worker and researcher
 sessions. You can also right-click a session and choose `Filter Lineage from
 Session`. The active filter is shown in the tree message; use
 `Clear Lineage Filter` to return to the normal view.

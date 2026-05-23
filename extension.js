@@ -428,7 +428,7 @@ async function pickLineageCategory() {
     {
       label: 'O2',
       value: LINEAGE_CATEGORY_O2,
-      description: 'Show root/top-supervisor sessions in the selected lineage.'
+      description: 'Show root/top-supervisor and uncategorized local Codex sessions.'
     },
     {
       label: 'O1',
@@ -438,7 +438,7 @@ async function pickLineageCategory() {
     {
       label: 'Other',
       value: LINEAGE_CATEGORY_OTHER,
-      description: 'Show worker, researcher, subagent, manual, and uncategorized sessions.'
+      description: 'Show worker, researcher, subagent, and manual sessions.'
     }
   ];
 
@@ -1984,53 +1984,53 @@ function lineageFieldsFromLocalCodexMeta(meta) {
 }
 
 function classifyLocalCodexLineageRole(meta) {
-  if (!normalizeThreadId(meta?.parentThreadId) || isRootLocalCodexThreadSource(meta?.threadSource)) {
-    return LINEAGE_CATEGORY_O2;
+  const classifiedRole = classifyExplicitStructuredLineageRole(meta) ||
+    classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
+    classifyStructuredAuxiliaryLineageRole(meta);
+  if (classifiedRole) {
+    return classifiedRole;
   }
 
-  return classifyExplicitStructuredLineageRole(meta) ||
-    classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
-    classifyStructuredOtherLineageRole(meta) ||
-    LINEAGE_CATEGORY_OTHER;
+  return LINEAGE_CATEGORY_O2;
 }
 
 function classifyExplicitStructuredLineageRole(meta) {
   const roleText = normalizeLineageSignalText([
-    meta?.threadSource,
     meta?.agentRole,
     meta?.agentNickname
   ]);
-  const sourceText = normalizeLineageSignalText([
-    typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
-  ]);
-  const structuredText = [roleText, sourceText].filter(Boolean).join(' ');
-
-  if (hasO2LineageSignal(structuredText)) {
-    return LINEAGE_CATEGORY_O2;
-  }
+  const threadSourceText = normalizeLineageSignalText([meta?.threadSource]);
 
   if (hasO1LineageSignal(roleText)) {
     return LINEAGE_CATEGORY_O1;
   }
 
-  if (hasO1LineageSignal(sourceText)) {
-    return LINEAGE_CATEGORY_O1;
+  if (hasOtherLineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (hasO2LineageSignal(roleText) || hasO2LineageSignal(threadSourceText)) {
+    return LINEAGE_CATEGORY_O2;
   }
 
   return undefined;
 }
 
-function classifyStructuredOtherLineageRole(meta) {
-  const roleText = normalizeLineageSignalText([
-    meta?.agentRole,
-    meta?.agentNickname
-  ]);
+function classifyStructuredAuxiliaryLineageRole(meta) {
   const sourceText = normalizeLineageSignalText([
     typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
   ]);
 
-  if (hasOtherLineageSignal(roleText) || hasOtherLineageSignal(sourceText)) {
+  if (hasO1LineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  if (hasOtherLineageSignal(sourceText)) {
     return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (hasO2LineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_O2;
   }
 
   return undefined;
@@ -2042,7 +2042,7 @@ function classifyPromptDeclaredLineageRole(value) {
     return undefined;
   }
 
-  const roleMatch = /^\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
+  const roleMatch = /(?:^|\r?\n)\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
   if (roleMatch) {
     const role = normalizeLineageSignalText([roleMatch[1]]);
     if (hasO2LineageSignal(role)) {
@@ -2099,11 +2099,6 @@ function hasOtherLineageSignal(text) {
     text &&
     /worker|researcher|explorer/.test(text)
   );
-}
-
-function isRootLocalCodexThreadSource(value) {
-  const normalized = stringOrUndefined(value)?.toLowerCase();
-  return normalized === 'user' || normalized === 'root';
 }
 
 function getSessionLineageRole(session) {
