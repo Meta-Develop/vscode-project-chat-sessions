@@ -19,11 +19,20 @@ const LINEAGE_CATEGORY_OTHER = 'other';
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
+const CODEX_CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
 const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
+const LOCAL_CODEX_SCAN_MAX_DIRECTORIES = 8192;
+const LOCAL_CODEX_SCAN_MAX_JSONL_FILES = 20000;
+const LOCAL_CODEX_RECENT_IMPORT_DAYS = 2;
+const LOCAL_CODEX_RECENT_IMPORT_MAX_JSONL_FILES = 512;
+const LOCAL_CODEX_RECENT_SCAN_MIN_INTERVAL_MS = 15000;
+const LOCAL_CODEX_SESSION_INDEX_PREFIX_BYTES = 4194304;
+const LOCAL_CODEX_SESSION_INDEX_FORCE_SUFFIX_BYTES = 16777216;
 const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 45000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
 const LOCAL_CODEX_RUNNING_STALE_MS = 90 * 1000;
 const LOCAL_CODEX_TARGETED_LOOKUP_DAYS = 45;
+const NEW_CODEX_SESSION_IMPORT_DELAYS_MS = [500, 1500, 3000, 6000, 10000, 15000];
 const LOCAL_CODEX_O1_PROMPT_MARKERS = [
   'You are a child orchestrator in an opt-in local Codex CLI supervisor run.'
 ];
@@ -32,6 +41,12 @@ const LOCAL_CODEX_OTHER_PROMPT_MARKERS = [
 ];
 
 const localCodexDiscoveryCache = {
+  key: undefined,
+  scannedAt: 0,
+  candidates: []
+};
+
+const localCodexRecentDiscoveryCache = {
   key: undefined,
   scannedAt: 0,
   candidates: []
@@ -191,7 +206,10 @@ async function activate(context) {
 
   context.subscriptions.push(
     activityBarTree,
-    vscode.commands.registerCommand('projectChatSessions.refresh', () => provider.refresh()),
+    vscode.commands.registerCommand('projectChatSessions.refresh', async () => {
+      await importDetectedCodexSessions(context, { forceLocal: true });
+      provider.refresh();
+    }),
     vscode.commands.registerCommand('projectChatSessions.setViewLocation', async () => {
       await setViewLocation(context);
     }),
@@ -233,16 +251,22 @@ async function activate(context) {
     }),
     vscode.commands.registerCommand('projectChatSessions.importLocalCodexSessions', async () => {
       if (!requireWorkspaceKey()) {
-        return;
+        return 0;
+      }
+
+      if (!isLocalCodexFilesystemAccessAllowed()) {
+        showLocalCodexWorkspaceTrustWarning();
+        return 0;
       }
 
       const count = await importLocalCodexSessions(context, { force: true });
       provider.refresh();
       if (count === 0) {
         vscode.window.showWarningMessage('No local Codex session changes were found for this workspace.');
-        return;
+        return 0;
       }
       vscode.window.showInformationMessage(`Updated ${count} local Codex session${count === 1 ? '' : 's'}.`);
+      return count;
     }),
     vscode.commands.registerCommand('projectChatSessions.newSession', async () => {
       await openNewSession(context, provider);
@@ -254,9 +278,10 @@ async function activate(context) {
     vscode.commands.registerCommand('projectChatSessions.openSession', async (input) => {
       const session = unwrapSession(input);
       if (session) {
-        await openUrl(session.url);
-        await touchSession(context, session.id);
-        provider.refresh();
+        if (await openUrl(session.url)) {
+          await touchSession(context, session.id);
+          provider.refresh();
+        }
       }
     }),
     vscode.commands.registerCommand('projectChatSessions.renameSession', async (input) => {
@@ -428,7 +453,7 @@ async function pickLineageCategory() {
     {
       label: 'O2',
       value: LINEAGE_CATEGORY_O2,
-      description: 'Show root/top-supervisor sessions in the selected lineage.'
+      description: 'Show root/top-supervisor and uncategorized local Codex sessions.'
     },
     {
       label: 'O1',
@@ -438,7 +463,7 @@ async function pickLineageCategory() {
     {
       label: 'Other',
       value: LINEAGE_CATEGORY_OTHER,
-      description: 'Show worker, researcher, subagent, manual, and uncategorized sessions.'
+      description: 'Show worker, researcher, subagent, and manual sessions.'
     }
   ];
 
@@ -589,10 +614,7 @@ async function openNewSession(context, provider) {
 
   try {
     await vscode.commands.executeCommand('chatgpt.newCodexPanel');
-    setTimeout(async () => {
-      await importOpenCodexTabs(context);
-      provider.refresh();
-    }, 1500);
+    scheduleNewCodexSessionImports(context, provider);
     return;
   } catch {
     // Fall back to URL opening when the OpenAI Codex extension is unavailable.
@@ -603,6 +625,30 @@ async function openNewSession(context, provider) {
     .get('defaultNewSessionUrl', 'https://chatgpt.com/');
 
   await openUrl(fallbackUrl);
+}
+
+function scheduleNewCodexSessionImports(context, provider) {
+  for (const delayMs of NEW_CODEX_SESSION_IMPORT_DELAYS_MS) {
+    const handle = setTimeout(async () => {
+      try {
+        const changed = await importNewCodexSessionCandidates(context);
+        if (changed > 0) {
+          provider.refresh();
+        }
+      } catch {
+        // Best-effort reflection only; the manual import commands remain available.
+      }
+    }, delayMs);
+
+    context.subscriptions.push({ dispose: () => clearTimeout(handle) });
+  }
+}
+
+async function importNewCodexSessionCandidates(context) {
+  let changed = 0;
+  changed += await importOpenCodexTabs(context);
+  changed += await importRecentLocalCodexSessions(context, { force: true });
+  return changed;
 }
 
 async function setProjectHome(context) {
@@ -693,12 +739,29 @@ async function touchSession(context, sessionId) {
 }
 
 async function openUrl(url) {
-  if (url.startsWith(`${CODEX_SCHEME}:`)) {
-    await openCodexUrl(url);
-    return;
+  const value = stringOrUndefined(url);
+  if (!value) {
+    vscode.window.showWarningMessage('Refused to open an empty session URL.');
+    return false;
   }
 
-  const uri = vscode.Uri.parse(url);
+  const codexUri = parseCodexConversationUri(value);
+  if (value.toLowerCase().startsWith(`${CODEX_SCHEME}:`)) {
+    if (!codexUri) {
+      vscode.window.showWarningMessage('Refused to open an invalid Codex conversation URI.');
+      return false;
+    }
+
+    await openCodexUrl(value, codexUri);
+    return true;
+  }
+
+  const uri = parseHttpsUri(value);
+  if (!uri) {
+    vscode.window.showWarningMessage('Refused to open a session URL that is not a valid https URL.');
+    return false;
+  }
+
   const mode = vscode.workspace
     .getConfiguration('projectChatSessions')
     .get('openMode', 'externalBrowser');
@@ -706,26 +769,56 @@ async function openUrl(url) {
   if (mode === 'simpleBrowser') {
     try {
       await vscode.commands.executeCommand('simpleBrowser.show', uri);
-      return;
+      return true;
     } catch {
       // Fall back to the system browser when the Simple Browser command is not available.
     }
   }
 
   await vscode.env.openExternal(uri);
+  return true;
 }
 
-async function openCodexUrl(url) {
-  const parsed = parseCodexConversationUri(url);
-  if (parsed && (await openCodexSidebarRoute(parsed))) {
-    return;
+async function openCodexUrl(url, parsed = parseCodexConversationUri(url)) {
+  if (!parsed) {
+    return false;
+  }
+
+  if (await openCodexSidebarRoute(parsed)) {
+    return true;
   }
 
   const uri = vscode.Uri.parse(url);
   try {
     await vscode.commands.executeCommand('vscode.openWith', uri, CODEX_EDITOR_VIEW_TYPE);
+    return true;
   } catch {
     await vscode.commands.executeCommand('vscode.open', uri);
+    return true;
+  }
+}
+
+function parseHttpsUri(value) {
+  const trimmed = stringOrUndefined(value);
+  if (!trimmed) {
+    return undefined;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed.protocol !== 'https:' || !parsed.hostname) {
+    return undefined;
+  }
+
+  try {
+    return vscode.Uri.parse(parsed.href);
+  } catch {
+    return undefined;
   }
 }
 
@@ -808,6 +901,16 @@ function requireWorkspaceKey() {
     vscode.window.showWarningMessage('Open a workspace folder before managing Codex project sessions.');
   }
   return workspaceKey;
+}
+
+function isLocalCodexFilesystemAccessAllowed() {
+  return vscode.workspace.isTrusted !== false;
+}
+
+function showLocalCodexWorkspaceTrustWarning() {
+  vscode.window.showWarningMessage(
+    'Local Codex session file access is disabled in Restricted Mode. Trust this workspace to import or refresh local Codex sessions.'
+  );
 }
 
 function getVisibleSessionsForTree(sessions, lineageFilter) {
@@ -1106,6 +1209,10 @@ function startAutoImport(context, provider) {
     refreshWhenChanged(await importLocalCodexSessions(context, options));
   }, 500);
 
+  const runRecentLocalSessions = debounce(async (options = {}) => {
+    refreshWhenChanged(await importRecentLocalCodexSessions(context, options));
+  }, 500);
+
   const runLocalStatusRefresh = debounce(async () => {
     if (!hasRefreshableLocalCodexSessions(context)) {
       return;
@@ -1114,9 +1221,11 @@ function startAutoImport(context, provider) {
   }, 500);
 
   runOpenTabs();
+  runRecentLocalSessions();
   runLocalStatusRefresh();
   const localScanTimeout = setTimeout(runLocalSessions, 2000);
   const localScanInterval = setInterval(runLocalSessions, LOCAL_CODEX_SCAN_MIN_INTERVAL_MS);
+  const recentLocalScanInterval = setInterval(runRecentLocalSessions, LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS);
   const localStatusInterval = setInterval(runLocalStatusRefresh, LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS);
 
   context.subscriptions.push(
@@ -1124,6 +1233,7 @@ function startAutoImport(context, provider) {
       dispose: () => {
         clearTimeout(localScanTimeout);
         clearInterval(localScanInterval);
+        clearInterval(recentLocalScanInterval);
         clearInterval(localStatusInterval);
       }
     },
@@ -1135,6 +1245,14 @@ function startAutoImport(context, provider) {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       invalidateLocalCodexDiscoveryCache();
       runOpenTabs();
+      runRecentLocalSessions({ force: true });
+      runLocalSessions({ force: true });
+      runLocalStatusRefresh();
+    }),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      invalidateLocalCodexDiscoveryCache();
+      runOpenTabs();
+      runRecentLocalSessions({ force: true });
       runLocalSessions({ force: true });
       runLocalStatusRefresh();
     }),
@@ -1149,6 +1267,7 @@ function startAutoImport(context, provider) {
         if (event.affectsConfiguration('projectChatSessions.localCodexSessionsPath')) {
           invalidateLocalCodexDiscoveryCache();
         }
+        runRecentLocalSessions({ force: true });
         runLocalSessions({ force: true });
         runLocalStatusRefresh();
       }
@@ -1156,14 +1275,20 @@ function startAutoImport(context, provider) {
   );
 }
 
-async function importDetectedCodexSessions(context) {
+async function importDetectedCodexSessions(context, options = {}) {
   let changed = 0;
 
   if (isAutoImportCodexTabsEnabled()) {
     changed += await importOpenCodexTabs(context);
   }
 
-  if (isAutoImportLocalCodexSessionsEnabled()) {
+  changed += await importRecentLocalCodexSessions(context, {
+    force: Boolean(options.forceLocal)
+  });
+
+  if (options.forceLocal) {
+    changed += await importLocalCodexSessions(context, { force: true });
+  } else if (isAutoImportLocalCodexSessionsEnabled()) {
     changed += await importLocalCodexSessions(context);
   }
 
@@ -1181,6 +1306,10 @@ async function importOpenCodexTabs(context) {
 }
 
 async function importLocalCodexSessions(context, options = {}) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return 0;
+  }
+
   const workspaceKey = getWorkspaceKey();
   if (!workspaceKey) {
     return 0;
@@ -1192,6 +1321,23 @@ async function importLocalCodexSessions(context, options = {}) {
     discoverLocalCodexSessions(workspaceKey, options)
   );
   return imported;
+}
+
+async function importRecentLocalCodexSessions(context, options = {}) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return 0;
+  }
+
+  const workspaceKey = getWorkspaceKey();
+  if (!workspaceKey) {
+    return 0;
+  }
+
+  return importCodexSessionCandidates(
+    context,
+    workspaceKey,
+    discoverRecentLocalCodexSessions(workspaceKey, options)
+  );
 }
 
 async function importCodexSessionCandidates(context, workspaceKey, discovered) {
@@ -1270,6 +1416,10 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
 }
 
 async function refreshLocalCodexSessionStatuses(context) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return 0;
+  }
+
   const workspaceKey = getWorkspaceKey();
   if (!workspaceKey) {
     return 0;
@@ -1362,6 +1512,10 @@ function statLocalFile(filePath) {
 }
 
 function hasRefreshableLocalCodexSessions(context) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return false;
+  }
+
   const workspaceKey = getWorkspaceKey();
   if (!workspaceKey) {
     return false;
@@ -1534,6 +1688,10 @@ function getLocalCodexDetailsForOpenTab(parsed) {
     return {};
   }
 
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return {};
+  }
+
   const meta = isAutoImportLocalCodexSessionsEnabled()
     ? getLocalCodexSessionMetaByConversationId(parsed.conversationId)
     : undefined;
@@ -1553,6 +1711,11 @@ function getLocalCodexDetailsForOpenTab(parsed) {
 }
 
 function discoverLocalCodexSessions(workspaceKey, options = {}) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    invalidateLocalCodexDiscoveryCache();
+    return [];
+  }
+
   const sessionsDir = getLocalCodexSessionsDir();
   if (!sessionsDir || !fs.existsSync(sessionsDir)) {
     invalidateLocalCodexDiscoveryCache();
@@ -1572,43 +1735,14 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
   }
 
   const localMetaById = readLocalCodexSessionMetaById(sessionsDir, options);
-  const sessionIndex = readLocalCodexSessionIndex(sessionsDir);
+  const sessionIndex = readLocalCodexSessionIndex(sessionsDir, options);
   const candidates = [];
 
   for (const meta of [...localMetaById.values()].sort((left, right) => right.mtimeMs - left.mtimeMs)) {
-    if (!meta || !meta.id || !meta.cwd || !meta.hasUserMessage) {
-      continue;
+    const candidate = localCodexSessionCandidateFromMeta(meta, sessionIndex, workspacePath);
+    if (candidate) {
+      candidates.push(candidate);
     }
-
-    if (normalizePathForComparison(meta.cwd) !== workspacePath) {
-      continue;
-    }
-
-    const createdAt = dateStringOrUndefined(meta.timestamp) || new Date(meta.mtimeMs).toISOString();
-    const indexEntry = sessionIndex.get(meta.id);
-    const status = readLocalCodexSessionStatus(meta.localFilePath);
-    const updatedAt = latestDateString([
-      dateStringOrUndefined(indexEntry?.updatedAt),
-      status.lastActivityAt,
-      new Date(meta.mtimeMs).toISOString()
-    ]);
-    candidates.push({
-      id: meta.id,
-      conversationId: meta.id,
-      title: titleFromLocalCodexSession(meta, indexEntry),
-      url: `${CODEX_SCHEME}://${CODEX_AUTHORITY}/local/${meta.id}`,
-      kind: 'codex-local',
-      titleSource: titleSourceFromLocalCodexSession(meta, indexEntry),
-      createdAt,
-      updatedAt,
-      localFilePath: meta.localFilePath,
-      ...lineageFieldsFromLocalCodexMeta(meta),
-      status: status.status,
-      lastStartedAt: status.lastStartedAt,
-      lastCompletedAt: status.lastCompletedAt,
-      lastAbortedAt: status.lastAbortedAt,
-      lastFailedAt: status.lastFailedAt
-    });
   }
 
   localCodexDiscoveryCache.key = cacheKey;
@@ -1618,11 +1752,111 @@ function discoverLocalCodexSessions(workspaceKey, options = {}) {
   return candidates;
 }
 
+function discoverRecentLocalCodexSessions(workspaceKey, options = {}) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    invalidateLocalCodexRecentDiscoveryCache();
+    return [];
+  }
+
+  const sessionsDir = getLocalCodexSessionsDir();
+  if (!sessionsDir || !fs.existsSync(sessionsDir)) {
+    invalidateLocalCodexRecentDiscoveryCache();
+    return [];
+  }
+
+  const workspacePath = normalizePathForComparison(workspaceKey);
+  const sessionsPath = normalizePathForComparison(sessionsDir);
+  const cacheKey = `${workspacePath}\n${sessionsPath}`;
+  const now = Date.now();
+  if (
+    !options.force &&
+    localCodexRecentDiscoveryCache.key === cacheKey &&
+    now - localCodexRecentDiscoveryCache.scannedAt < LOCAL_CODEX_RECENT_SCAN_MIN_INTERVAL_MS
+  ) {
+    return localCodexRecentDiscoveryCache.candidates.map((candidate) => ({ ...candidate }));
+  }
+
+  const sessionIndex = readLocalCodexSessionIndex(sessionsDir, options);
+  const candidates = [];
+  const seenIds = new Set();
+
+  for (const file of collectRecentJsonlFiles(sessionsDir)) {
+    const meta = readLocalCodexSessionMeta(file.path);
+    if (!meta?.id || seenIds.has(meta.id)) {
+      continue;
+    }
+
+    seenIds.add(meta.id);
+    const candidate = localCodexSessionCandidateFromMeta(
+      {
+        ...meta,
+        localFilePath: file.path,
+        mtimeMs: file.mtimeMs
+      },
+      sessionIndex,
+      workspacePath
+    );
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  localCodexRecentDiscoveryCache.key = cacheKey;
+  localCodexRecentDiscoveryCache.scannedAt = now;
+  localCodexRecentDiscoveryCache.candidates = candidates.map((candidate) => ({ ...candidate }));
+
+  return candidates;
+}
+
+function localCodexSessionCandidateFromMeta(meta, sessionIndex, workspacePath) {
+  if (!meta || !meta.id || !meta.cwd || !meta.hasUserMessage) {
+    return undefined;
+  }
+
+  if (normalizePathForComparison(meta.cwd) !== workspacePath) {
+    return undefined;
+  }
+
+  const createdAt = dateStringOrUndefined(meta.timestamp) || new Date(meta.mtimeMs).toISOString();
+  const indexEntry = sessionIndex.get(meta.id);
+  const status = readLocalCodexSessionStatus(meta.localFilePath);
+  const updatedAt = latestDateString([
+    dateStringOrUndefined(indexEntry?.updatedAt),
+    status.lastActivityAt,
+    new Date(meta.mtimeMs).toISOString()
+  ]);
+
+  return {
+    id: meta.id,
+    conversationId: meta.id,
+    title: titleFromLocalCodexSession(meta, indexEntry),
+    url: `${CODEX_SCHEME}://${CODEX_AUTHORITY}/local/${meta.id}`,
+    kind: 'codex-local',
+    titleSource: titleSourceFromLocalCodexSession(meta, indexEntry),
+    createdAt,
+    updatedAt,
+    localFilePath: meta.localFilePath,
+    ...lineageFieldsFromLocalCodexMeta(meta),
+    status: status.status,
+    lastStartedAt: status.lastStartedAt,
+    lastCompletedAt: status.lastCompletedAt,
+    lastAbortedAt: status.lastAbortedAt,
+    lastFailedAt: status.lastFailedAt
+  };
+}
+
 function invalidateLocalCodexDiscoveryCache() {
   localCodexDiscoveryCache.key = undefined;
   localCodexDiscoveryCache.scannedAt = 0;
   localCodexDiscoveryCache.candidates = [];
+  invalidateLocalCodexRecentDiscoveryCache();
   invalidateLocalCodexSessionMetaCache();
+}
+
+function invalidateLocalCodexRecentDiscoveryCache() {
+  localCodexRecentDiscoveryCache.key = undefined;
+  localCodexRecentDiscoveryCache.scannedAt = 0;
+  localCodexRecentDiscoveryCache.candidates = [];
 }
 
 function invalidateLocalCodexSessionMetaCache() {
@@ -1632,10 +1866,14 @@ function invalidateLocalCodexSessionMetaCache() {
   localCodexTargetedFileCache.clear();
 }
 
-function readLocalCodexSessionIndex(sessionsDir) {
+function readLocalCodexSessionIndex(sessionsDir, options = {}) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return new Map();
+  }
+
   const indexPath = path.join(path.dirname(sessionsDir), 'session_index.jsonl');
   const index = new Map();
-  const text = readFilePrefix(indexPath, 4194304);
+  const text = readLocalCodexSessionIndexText(indexPath, options);
   if (!text) {
     return index;
   }
@@ -1667,15 +1905,44 @@ function readLocalCodexSessionIndex(sessionsDir) {
   return index;
 }
 
+function readLocalCodexSessionIndexText(indexPath, options = {}) {
+  const prefix = readFilePrefix(indexPath, LOCAL_CODEX_SESSION_INDEX_PREFIX_BYTES);
+  if (!options.force) {
+    return prefix;
+  }
+
+  const suffix = readFileSuffix(indexPath, LOCAL_CODEX_SESSION_INDEX_FORCE_SUFFIX_BYTES);
+  if (!prefix) {
+    return suffix;
+  }
+  if (!suffix || suffix === prefix) {
+    return prefix;
+  }
+
+  return `${prefix}\n${suffix}`;
+}
+
 function collectJsonlFiles(rootDir) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return [];
+  }
+
   const files = [];
   const pending = [rootDir];
+  let directoriesScanned = 0;
+  let jsonlFilesScanned = 0;
 
-  while (pending.length > 0) {
+  while (
+    pending.length > 0 &&
+    directoriesScanned < LOCAL_CODEX_SCAN_MAX_DIRECTORIES &&
+    jsonlFilesScanned < LOCAL_CODEX_SCAN_MAX_JSONL_FILES
+  ) {
     const dir = pending.pop();
+    directoriesScanned += 1;
     let entries;
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
     } catch {
       continue;
     }
@@ -1683,7 +1950,9 @@ function collectJsonlFiles(rootDir) {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        pending.push(fullPath);
+        if (directoriesScanned + pending.length < LOCAL_CODEX_SCAN_MAX_DIRECTORIES) {
+          pending.push(fullPath);
+        }
         continue;
       }
 
@@ -1691,11 +1960,56 @@ function collectJsonlFiles(rootDir) {
         continue;
       }
 
+      jsonlFilesScanned += 1;
       try {
         const stat = fs.statSync(fullPath);
         files.push({ path: fullPath, mtimeMs: stat.mtimeMs });
       } catch {
         // Ignore files that disappear while Codex is rotating session logs.
+      }
+
+      if (jsonlFilesScanned >= LOCAL_CODEX_SCAN_MAX_JSONL_FILES) {
+        break;
+      }
+    }
+  }
+
+  return files.sort((left, right) => right.mtimeMs - left.mtimeMs);
+}
+
+function collectRecentJsonlFiles(sessionsDir) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return [];
+  }
+
+  const files = [];
+  const seenFiles = new Set();
+  for (const dir of recentLocalCodexSessionDirs(sessionsDir, LOCAL_CODEX_RECENT_IMPORT_DAYS)) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+        .sort((left, right) => right.name.localeCompare(left.name));
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const filePath = path.join(dir, entry.name);
+      const normalized = normalizePathForComparison(filePath);
+      if (seenFiles.has(normalized)) {
+        continue;
+      }
+
+      seenFiles.add(normalized);
+      const stat = statLocalFile(filePath);
+      if (!stat) {
+        continue;
+      }
+
+      files.push({ path: filePath, mtimeMs: stat.mtimeMs });
+      if (files.length >= LOCAL_CODEX_RECENT_IMPORT_MAX_JSONL_FILES) {
+        return files.sort((left, right) => right.mtimeMs - left.mtimeMs);
       }
     }
   }
@@ -1704,6 +2018,11 @@ function collectJsonlFiles(rootDir) {
 }
 
 function readLocalCodexSessionMetaById(sessionsDir = getLocalCodexSessionsDir(), options = {}) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    invalidateLocalCodexSessionMetaCache();
+    return new Map();
+  }
+
   if (!sessionsDir || !fs.existsSync(sessionsDir)) {
     invalidateLocalCodexSessionMetaCache();
     return new Map();
@@ -1740,6 +2059,10 @@ function readLocalCodexSessionMetaById(sessionsDir = getLocalCodexSessionsDir(),
 }
 
 function getLocalCodexSessionMetaByConversationId(conversationId) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return undefined;
+  }
+
   const id = stringOrUndefined(conversationId);
   if (!id) {
     return undefined;
@@ -1757,6 +2080,10 @@ function getLocalCodexSessionMetaByConversationId(conversationId) {
 }
 
 function findLocalCodexSessionFileByConversationId(conversationId) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return undefined;
+  }
+
   const id = stringOrUndefined(conversationId);
   const sessionsDir = getLocalCodexSessionsDir();
   if (!id || !sessionsDir || !fs.existsSync(sessionsDir)) {
@@ -1786,6 +2113,10 @@ function findLocalCodexSessionFileByConversationId(conversationId) {
 }
 
 function findLocalCodexSessionFileInBoundedDateDirs(sessionsDir, id) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return undefined;
+  }
+
   for (const dir of recentLocalCodexSessionDirs(sessionsDir, LOCAL_CODEX_TARGETED_LOOKUP_DAYS)) {
     let entries;
     try {
@@ -1845,6 +2176,10 @@ function recentLocalCodexSessionDirs(sessionsDir, days) {
 }
 
 function readLocalCodexSessionMeta(filePath) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return undefined;
+  }
+
   const text = readFilePrefix(filePath, 262144);
   if (!text) {
     return undefined;
@@ -1984,53 +2319,53 @@ function lineageFieldsFromLocalCodexMeta(meta) {
 }
 
 function classifyLocalCodexLineageRole(meta) {
-  if (!normalizeThreadId(meta?.parentThreadId) || isRootLocalCodexThreadSource(meta?.threadSource)) {
-    return LINEAGE_CATEGORY_O2;
+  const classifiedRole = classifyExplicitStructuredLineageRole(meta) ||
+    classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
+    classifyStructuredAuxiliaryLineageRole(meta);
+  if (classifiedRole) {
+    return classifiedRole;
   }
 
-  return classifyExplicitStructuredLineageRole(meta) ||
-    classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
-    classifyStructuredOtherLineageRole(meta) ||
-    LINEAGE_CATEGORY_OTHER;
+  return LINEAGE_CATEGORY_O2;
 }
 
 function classifyExplicitStructuredLineageRole(meta) {
   const roleText = normalizeLineageSignalText([
-    meta?.threadSource,
     meta?.agentRole,
     meta?.agentNickname
   ]);
-  const sourceText = normalizeLineageSignalText([
-    typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
-  ]);
-  const structuredText = [roleText, sourceText].filter(Boolean).join(' ');
-
-  if (hasO2LineageSignal(structuredText)) {
-    return LINEAGE_CATEGORY_O2;
-  }
+  const threadSourceText = normalizeLineageSignalText([meta?.threadSource]);
 
   if (hasO1LineageSignal(roleText)) {
     return LINEAGE_CATEGORY_O1;
   }
 
-  if (hasO1LineageSignal(sourceText)) {
-    return LINEAGE_CATEGORY_O1;
+  if (hasOtherLineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (hasO2LineageSignal(roleText) || hasO2LineageSignal(threadSourceText)) {
+    return LINEAGE_CATEGORY_O2;
   }
 
   return undefined;
 }
 
-function classifyStructuredOtherLineageRole(meta) {
-  const roleText = normalizeLineageSignalText([
-    meta?.agentRole,
-    meta?.agentNickname
-  ]);
+function classifyStructuredAuxiliaryLineageRole(meta) {
   const sourceText = normalizeLineageSignalText([
     typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
   ]);
 
-  if (hasOtherLineageSignal(roleText) || hasOtherLineageSignal(sourceText)) {
+  if (hasO1LineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  if (hasOtherLineageSignal(sourceText)) {
     return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (hasO2LineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_O2;
   }
 
   return undefined;
@@ -2042,7 +2377,7 @@ function classifyPromptDeclaredLineageRole(value) {
     return undefined;
   }
 
-  const roleMatch = /^\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
+  const roleMatch = /(?:^|\r?\n)\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
   if (roleMatch) {
     const role = normalizeLineageSignalText([roleMatch[1]]);
     if (hasO2LineageSignal(role)) {
@@ -2099,11 +2434,6 @@ function hasOtherLineageSignal(text) {
     text &&
     /worker|researcher|explorer/.test(text)
   );
-}
-
-function isRootLocalCodexThreadSource(value) {
-  const normalized = stringOrUndefined(value)?.toLowerCase();
-  return normalized === 'user' || normalized === 'root';
 }
 
 function getSessionLineageRole(session) {
@@ -2264,6 +2594,10 @@ function readFileSuffix(filePath, maxBytes) {
 }
 
 function readLocalCodexSessionStatus(filePath, fileStat) {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return {};
+  }
+
   const text = readFileSuffix(filePath, LOCAL_CODEX_STATUS_SUFFIX_BYTES);
   if (!text) {
     return {};
@@ -2521,23 +2855,32 @@ function asUri(value) {
 function parseCodexConversationUri(value) {
   let uri;
   try {
-    uri = typeof value === 'string' ? vscode.Uri.parse(value) : value;
+    uri = typeof value === 'string' ? vscode.Uri.parse(value.trim()) : value;
   } catch {
     return undefined;
   }
 
-  if (uri.scheme !== CODEX_SCHEME || uri.authority !== CODEX_AUTHORITY) {
+  if (!uri || uri.scheme !== CODEX_SCHEME || uri.authority !== CODEX_AUTHORITY) {
     return undefined;
   }
 
-  const parts = uri.path.split('/').filter(Boolean);
-  if (parts.length < 2 || !parts[1]) {
+  if (uri.query || uri.fragment) {
+    return undefined;
+  }
+
+  const match = /^\/(local|remote)\/([^/]+)$/.exec(uri.path);
+  if (!match) {
+    return undefined;
+  }
+
+  const conversationId = match[2];
+  if (!CODEX_CONVERSATION_ID_PATTERN.test(conversationId)) {
     return undefined;
   }
 
   return {
-    kind: parts[0],
-    conversationId: parts[1]
+    kind: match[1],
+    conversationId
   };
 }
 
@@ -2555,6 +2898,10 @@ function isAutoImportCodexTabsEnabled() {
 }
 
 function isAutoImportLocalCodexSessionsEnabled() {
+  if (!isLocalCodexFilesystemAccessAllowed()) {
+    return false;
+  }
+
   return vscode.workspace
     .getConfiguration('projectChatSessions')
     .get('autoImportLocalCodexSessions', false);

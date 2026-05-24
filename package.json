@@ -2,7 +2,7 @@
   "name": "project-chat-sessions",
   "displayName": "Project Chat Sessions",
   "description": "Workspace-scoped shortcuts for ChatGPT/Codex conversation URLs.",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "publisher": "Meta-Develop",
   "author": "Meta-Develop",
   "license": "AGPL-3.0-or-later",
@@ -32,6 +32,16 @@
   "categories": [
     "Other"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Local Codex file scanning is disabled until the workspace is trusted.",
+      "restrictedConfigurations": [
+        "projectChatSessions.autoImportLocalCodexSessions",
+        "projectChatSessions.localCodexSessionsPath"
+      ]
+    }
+  },
   "activationEvents": [
     "onStartupFinished",
     "onView:projectChatSessions.sessionsView",
@@ -270,6 +280,7 @@
         },
         "projectChatSessions.defaultNewSessionUrl": {
           "type": "string",
+          "scope": "application",
           "default": "https://chatgpt.com/",
           "description": "Fallback URL used by New Session when this workspace has no project home URL."
         },
@@ -308,11 +319,13 @@
         },
         "projectChatSessions.autoImportLocalCodexSessions": {
           "type": "boolean",
+          "scope": "application",
           "default": false,
-          "description": "Automatically add local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Disabled by default so startup does not scan large local Codex session directories; use the manual import command or opt in to enable throttled scans. Codex thread names are read locally for session titles when available, and subagent plus orchestrator child/worker sessions are hidden until a lineage filter is active."
+          "description": "Automatically add historical local Codex CLI sessions from ~/.codex/sessions when its cwd matches the current workspace. Disabled by default so startup does not scan large local Codex session directories; recent newly created local sessions still use a bounded lookup. Codex thread names are read locally for session titles when available, and subagent plus orchestrator child/worker sessions are hidden until a lineage filter is active."
         },
         "projectChatSessions.localCodexSessionsPath": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Optional path to the local Codex sessions directory. Leave empty to use $CODEX_HOME/sessions or ~/.codex/sessions."
         }

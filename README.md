@@ -72,15 +72,16 @@ extension to create a new panel and falls back to the default new-session URL.
 
 ## Codex Auto-Import
 
-Automatic import only works for Codex conversations that are open as VS Code
-editor tabs in the same window as the workspace. If nothing appears, run
+Automatic import watches Codex conversations that are open as VS Code editor
+tabs in the same window as the workspace. It also performs a bounded recent
+local-session lookup so newly created sidebar/local Codex sessions can appear
+without enabling broad historical local scanning. If nothing appears, run
 `Project Chat Sessions: Import Open Codex Tabs` from the Command Palette after
 opening the Codex conversation tab. For open local Codex tabs, the extension can
 attach the matching local session file by session ID with a bounded recent-date
-lookup, without enabling broad local session scanning. Local Codex tabs backed
-by subagent session files or Multi-Agent_Coding_Orchestrator child/worker
-sessions are stored when their metadata is available, but they stay hidden in
-the default unfiltered tree.
+lookup. Local Codex tabs backed by subagent session files or
+Multi-Agent_Coding_Orchestrator child/worker sessions are stored when their
+metadata is available, but they stay hidden in the default unfiltered tree.
 
 The extension can also scan local Codex CLI session metadata under
 `$CODEX_HOME/sessions` or `~/.codex/sessions`. Automatic local scanning is
@@ -88,7 +89,12 @@ disabled by default so VS Code startup does not walk large Codex session
 directories. Use `Project Chat Sessions: Import Local Codex Sessions` to run a
 manual import, or enable
 `projectChatSessions.autoImportLocalCodexSessions` to opt in to throttled
-automatic scans.
+automatic historical scans. The default recent lookup only checks a small number
+of current date-based session directories and still filters sessions to the
+current workspace. The Project Chats refresh button also runs an on-demand full
+local metadata resync for the current workspace, so older saved local sessions
+can pick up Codex summary titles from `session_index.jsonl` without enabling
+recurring historical scans.
 
 Local import reads each JSONL file's initial `session_meta` record, checks for
 a user-message record, and uses the Codex `thread_name` from
@@ -98,9 +104,11 @@ but never sent a user message are skipped. Local Codex subagent/delegated-worker
 session files and Multi-Agent_Coding_Orchestrator child/worker sessions are
 imported with lineage metadata when present, then hidden from the default tree
 until a lineage filter is active. For performance, the importer reads the
-beginning of each session file and the beginning of `session_index.jsonl`;
-unusually large or differently ordered Codex metadata can require a manual
-title edit after import.
+beginning of each session file. Background imports read the beginning of
+`session_index.jsonl`; manual refresh/import paths also read the tail of that
+append-only index so newer title updates in large indexes are more likely to be
+applied. Unusually large or differently ordered Codex metadata can still require
+a manual title edit after import.
 Tracked local sessions show as running only while their JSONL file has recent
 file activity after the latest `task_started` event. Completed turns use the
 normal session icon, aborted turns show as aborted, failed turns show as
@@ -113,8 +121,8 @@ Use `Show O2 Codex Sessions`, `Show O1 Codex Sessions`, or
 `Show Other Codex Sessions` from the `Project Chats` view title to filter all
 saved local Codex sessions by role without choosing a source session. Use
 `Filter by Codex Lineage` to choose a source session and then show its full
-lineage, only O2 root/top-supervisor sessions, O1
-orchestrator/supervisor/coordinator sessions, or Other worker and uncategorized
+lineage, O2 root/top-supervisor or uncategorized local Codex sessions, O1
+orchestrator/supervisor/coordinator sessions, or Other worker and researcher
 sessions. You can also right-click a session and choose `Filter Lineage from
 Session`. The active filter is shown in the tree message; use
 `Clear Lineage Filter` to return to the normal view.
