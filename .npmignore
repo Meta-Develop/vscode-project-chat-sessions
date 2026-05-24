@@ -1,0 +1,40 @@
+# Private/local agent and editor context
+.agents
+.agents/
+.agent
+.agent/
+.vscode
+.vscode/
+AGENTS.md
+
+# Secrets and local environment
+.env
+.env.*
+
+# Generated package and archive artifacts
+*.vsix
+*.zip
+*.tgz
+*.tar
+*.tar.gz
+*.tmp
+*.temp
+tmp/
+temp/
+.tmp/
+.temp/
+
+# Common local junk
+node_modules/
+coverage/
+.nyc_output/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.0.16
+
+- Fix local Codex O2/root role classification so root sessions stay in O2 and
+  auxiliary sessions classify more accurately.
+- Make New Session reflection robust with repeated follow-up imports and a
+  bounded recent local session lookup.
+- Make Project Chats Refresh perform an on-demand full local metadata resync
+  for the current workspace so older sessions can pick up Codex summary titles
+  from `session_index.jsonl` without enabling recurring historical scans.
+- Add workspace trust and file access hardening for local Codex session reads.
+- Add package safety hardening with `.npmignore` exclusions and NOTICE inclusion
+  in the VSIX.
+
 ## 0.0.15
 
 - Disable automatic local Codex session scanning by default while preserving
