@@ -2336,15 +2336,19 @@ function classifyExplicitStructuredLineageRole(meta) {
   ]);
   const threadSourceText = normalizeLineageSignalText([meta?.threadSource]);
 
-  if (hasO1LineageSignal(roleText)) {
-    return LINEAGE_CATEGORY_O1;
-  }
-
   if (hasOtherLineageSignal(roleText)) {
     return LINEAGE_CATEGORY_OTHER;
   }
 
-  if (hasO2LineageSignal(roleText) || hasO2LineageSignal(threadSourceText)) {
+  if (hasO2LineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_O2;
+  }
+
+  if (hasO1LineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  if (hasO2LineageSignal(threadSourceText)) {
     return LINEAGE_CATEGORY_O2;
   }
 
@@ -2356,16 +2360,16 @@ function classifyStructuredAuxiliaryLineageRole(meta) {
     typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
   ]);
 
-  if (hasO1LineageSignal(sourceText)) {
-    return LINEAGE_CATEGORY_O1;
-  }
-
   if (hasOtherLineageSignal(sourceText)) {
     return LINEAGE_CATEGORY_OTHER;
   }
 
   if (hasO2LineageSignal(sourceText)) {
     return LINEAGE_CATEGORY_O2;
+  }
+
+  if (hasO1LineageSignal(sourceText)) {
+    return LINEAGE_CATEGORY_O1;
   }
 
   return undefined;
@@ -2380,23 +2384,23 @@ function classifyPromptDeclaredLineageRole(value) {
   const roleMatch = /(?:^|\r?\n)\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
   if (roleMatch) {
     const role = normalizeLineageSignalText([roleMatch[1]]);
+    if (hasOtherLineageSignal(role)) {
+      return LINEAGE_CATEGORY_OTHER;
+    }
     if (hasO2LineageSignal(role)) {
       return LINEAGE_CATEGORY_O2;
     }
     if (hasO1LineageSignal(role)) {
       return LINEAGE_CATEGORY_O1;
     }
-    if (hasOtherLineageSignal(role)) {
-      return LINEAGE_CATEGORY_OTHER;
-    }
-  }
-
-  if (LOCAL_CODEX_O1_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
-    return LINEAGE_CATEGORY_O1;
   }
 
   if (LOCAL_CODEX_OTHER_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
     return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (LOCAL_CODEX_O1_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
+    return LINEAGE_CATEGORY_O1;
   }
 
   return undefined;
@@ -2437,6 +2441,12 @@ function hasOtherLineageSignal(text) {
 }
 
 function getSessionLineageRole(session) {
+  const classifiedRole = classifyExplicitStructuredLineageRole(session) ||
+    classifyStructuredAuxiliaryLineageRole(session);
+  if (classifiedRole) {
+    return classifiedRole;
+  }
+
   const role = normalizeLineageRole(session?.lineageRole);
   if (role) {
     return role;
