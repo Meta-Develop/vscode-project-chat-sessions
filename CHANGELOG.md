@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.17
+
+- Fix O2 role filtering so explicit O2/root session signals take precedence
+  over broader O1/orchestrator markers.
+
 ## 0.0.16
 
 - Fix local Codex O2/root role classification so root sessions stay in O2 and
