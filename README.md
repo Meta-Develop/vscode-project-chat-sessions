@@ -103,28 +103,32 @@ sessions whose `cwd` matches the current workspace. Sessions that were opened
 but never sent a user message are skipped. Local Codex subagent/delegated-worker
 session files and Multi-Agent_Coding_Orchestrator child/worker sessions are
 imported with lineage metadata when present, then hidden from the default tree
-until a lineage filter is active. For performance, the importer reads the
-beginning of each session file. Background imports read the beginning of
-`session_index.jsonl`; manual refresh/import paths also read the tail of that
-append-only index so newer title updates in large indexes are more likely to be
-applied. Unusually large or differently ordered Codex metadata can still require
-a manual title edit after import.
+until a lineage filter is active. Multi-Agent_Coding_Orchestrator role filters
+use the canonical `ROLE` prefix first; `AGENT_LABEL`/nickname is display
+metadata and does not affect O2/O1/Other classification. For performance, the
+importer reads the beginning of each session file. Background imports read the
+beginning of `session_index.jsonl`; manual refresh/import paths also read the
+tail of that append-only index so newer title updates in large indexes are more
+likely to be applied. Unusually large or differently ordered Codex metadata can
+still require a manual title edit after import.
 Tracked local sessions show as running only while their JSONL file has recent
-file activity after the latest `task_started` event. Completed turns use the
+file activity after the latest `task_started` event or while an existing
+running/stale session file is still being written. Completed turns use the
 normal session icon, aborted turns show as aborted, failed turns show as
 failed, and sessions with no terminal event stop spinning after a short
-inactivity window. Status refresh for already imported local sessions does not
-require automatic local import to be enabled and does not scan the Codex
-sessions directory.
+inactivity window. Older error/abort records are not treated as terminal when
+newer records or recent file activity show the turn is still active. Status
+refresh for already imported local sessions does not require automatic local
+import to be enabled and does not scan the Codex sessions directory.
 
 Use `Show O2 Codex Sessions`, `Show O1 Codex Sessions`, or
 `Show Other Codex Sessions` from the `Project Chats` view title to filter all
 saved local Codex sessions by role without choosing a source session. Use
 `Filter by Codex Lineage` to choose a source session and then show its full
 lineage, O2 root/top-supervisor or uncategorized local Codex sessions, O1
-orchestrator/supervisor/coordinator sessions, or Other worker and researcher
-sessions. You can also right-click a session and choose `Filter Lineage from
-Session`. The active filter is shown in the tree message; use
+child-orchestrator sessions, or Other worker, researcher, and auditor sessions.
+You can also right-click a session and choose `Filter Lineage from Session`.
+The active filter is shown in the tree message; use
 `Clear Lineage Filter` to return to the normal view.
 
 If your Codex sessions live somewhere else, set
@@ -141,8 +145,9 @@ tabs whose URI uses `openai-codex://route/local/<conversationId>` or
 `openai-codex://route/remote/<conversationId>`.
 
 Local Codex import reads session ID, working directory, timestamp, parent thread
-ID, thread depth, agent role, agent nickname, and Codex thread names from local
-Codex files when present. If no thread name exists yet, it can fall back to the
+ID, thread depth, agent role, agent kind, no-further-delegation flag, display
+nickname/label, and Codex thread names from local Codex files when present.
+If no thread name exists yet, it can fall back to the
 first user message excerpt for the local shortcut title. It does not scrape
 Codex webviews, browser pages, private APIs, hidden account data, or
 account-wide history, and it does not send message text anywhere.

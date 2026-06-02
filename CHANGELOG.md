@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.18
+
+- Use strict Multi-Agent_Coding_Orchestrator role-prefix classification for
+  O2/O1/Other filters.
+- Treat `AGENT_LABEL` and display nicknames as metadata only, so they no longer
+  control O2/O1/Other classification.
+- Keep worker, researcher, auditor, and expert-* terminal roles classified as
+  Other.
+- Make local Codex running, failed, aborted, and completed detection less eager
+  by using semantic event order plus an mtime:size status cache.
+
 ## 0.0.17
 
 - Fix O2 role filtering so explicit O2/root session signals take precedence

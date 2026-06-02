@@ -31,6 +31,7 @@ const LOCAL_CODEX_SESSION_INDEX_FORCE_SUFFIX_BYTES = 16777216;
 const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 45000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
 const LOCAL_CODEX_RUNNING_STALE_MS = 90 * 1000;
+const LOCAL_CODEX_TERMINAL_MTIME_GRACE_MS = 2000;
 const LOCAL_CODEX_TARGETED_LOOKUP_DAYS = 45;
 const NEW_CODEX_SESSION_IMPORT_DELAYS_MS = [500, 1500, 3000, 6000, 10000, 15000];
 const LOCAL_CODEX_O1_PROMPT_MARKERS = [
@@ -1403,6 +1404,8 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
       threadDepth: candidate.threadDepth,
       agentRole: candidate.agentRole,
       agentNickname: candidate.agentNickname,
+      agentKind: candidate.agentKind,
+      noFurtherDelegation: candidate.noFurtherDelegation,
       lineageRole: candidate.lineageRole
     });
     changed += 1;
@@ -1444,24 +1447,24 @@ async function refreshLocalCodexSessionStatuses(context) {
       continue;
     }
 
-    const mtimeMs = Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : 0;
-    if (localCodexStatusMtimeCache.get(filePath) === mtimeMs) {
-      const staleStatus = staleStatusFromExistingSessionMtime(session, stat);
-      if (!staleStatus.status) {
+    const fileStamp = localCodexStatusFileStamp(stat);
+    if (localCodexStatusMtimeCache.get(filePath) === fileStamp) {
+      const mtimeStatus = statusFromExistingSessionMtime(session, stat);
+      if (!mtimeStatus.status) {
         continue;
       }
 
-      if (mergeSessionStatus(session, staleStatus)) {
+      if (mergeSessionStatus(session, mtimeStatus)) {
         changed += 1;
       }
       continue;
     }
 
-    localCodexStatusMtimeCache.set(filePath, mtimeMs);
+    localCodexStatusMtimeCache.set(filePath, fileStamp);
     const status = readLocalCodexSessionStatus(filePath, stat);
     const effectiveStatus = status.status
       ? status
-      : staleStatusFromExistingSessionMtime(session, stat);
+      : statusFromExistingSessionMtime(session, stat);
     if (!effectiveStatus.status) {
       continue;
     }
@@ -1486,21 +1489,27 @@ async function refreshLocalCodexSessionStatuses(context) {
   return changed;
 }
 
-function staleStatusFromExistingSessionMtime(session, stat) {
+function statusFromExistingSessionMtime(session, stat) {
   if (session?.status !== 'running' && session?.status !== 'stale') {
     return {};
   }
 
   const activeAt = Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : undefined;
-  if (!activeAt || Date.now() - activeAt <= LOCAL_CODEX_RUNNING_STALE_MS) {
+  if (!activeAt) {
     return {};
   }
 
   return {
-    status: 'stale',
+    status: activeLocalCodexStatusFromTime(activeAt),
     lastStartedAt: session.lastStartedAt,
     lastActivityAt: new Date(activeAt).toISOString()
   };
+}
+
+function localCodexStatusFileStamp(stat) {
+  const mtimeMs = Number.isFinite(stat?.mtimeMs) ? stat.mtimeMs : 0;
+  const size = Number.isFinite(stat?.size) ? stat.size : 0;
+  return `${mtimeMs}:${size}`;
 }
 
 function statLocalFile(filePath) {
@@ -1563,7 +1572,15 @@ function mergeSessionStatus(session, candidate) {
 
 function mergeSessionLineageMetadata(session, candidate) {
   let changed = false;
-  for (const field of ['parentThreadId', 'threadDepth', 'agentRole', 'agentNickname', 'lineageRole']) {
+  for (const field of [
+    'parentThreadId',
+    'threadDepth',
+    'agentRole',
+    'agentNickname',
+    'agentKind',
+    'noFurtherDelegation',
+    'lineageRole'
+  ]) {
     if (candidate[field] !== undefined && session[field] !== candidate[field]) {
       session[field] = candidate[field];
       changed = true;
@@ -2275,35 +2292,82 @@ function extractLocalCodexLineageMetadata(payload) {
       source?.depth,
       payload?.depth,
       payload?.thread_depth,
-      payload?.threadDepth
+      payload?.threadDepth,
+      threadSpawn?.THREAD_DEPTH,
+      source?.THREAD_DEPTH,
+      payload?.THREAD_DEPTH
     ),
     agentRole: firstString(
       threadSpawn?.agent_role,
       threadSpawn?.agentRole,
       threadSpawn?.role,
+      threadSpawn?.ROLE,
       roleSource?.agent_role,
       roleSource?.agentRole,
       roleSource?.role,
+      roleSource?.ROLE,
       source?.agent_role,
       source?.agentRole,
       source?.role,
+      source?.ROLE,
       payload?.agent_role,
       payload?.agentRole,
-      payload?.role
+      payload?.role,
+      payload?.ROLE
     ),
     agentNickname: firstString(
       threadSpawn?.agent_nickname,
       threadSpawn?.agentNickname,
+      threadSpawn?.agent_label,
+      threadSpawn?.agentLabel,
+      threadSpawn?.AGENT_LABEL,
       threadSpawn?.nickname,
       roleSource?.agent_nickname,
       roleSource?.agentNickname,
+      roleSource?.agent_label,
+      roleSource?.agentLabel,
+      roleSource?.AGENT_LABEL,
       roleSource?.nickname,
       source?.agent_nickname,
       source?.agentNickname,
+      source?.agent_label,
+      source?.agentLabel,
+      source?.AGENT_LABEL,
       source?.nickname,
       payload?.agent_nickname,
       payload?.agentNickname,
+      payload?.agent_label,
+      payload?.agentLabel,
+      payload?.AGENT_LABEL,
       payload?.nickname
+    ),
+    agentKind: firstString(
+      threadSpawn?.agent_kind,
+      threadSpawn?.agentKind,
+      threadSpawn?.AGENT_KIND,
+      roleSource?.agent_kind,
+      roleSource?.agentKind,
+      roleSource?.AGENT_KIND,
+      source?.agent_kind,
+      source?.agentKind,
+      source?.AGENT_KIND,
+      payload?.agent_kind,
+      payload?.agentKind,
+      payload?.AGENT_KIND
+    ),
+    noFurtherDelegation: firstBoolean(
+      threadSpawn?.no_further_delegation,
+      threadSpawn?.noFurtherDelegation,
+      threadSpawn?.NO_FURTHER_DELEGATION,
+      roleSource?.no_further_delegation,
+      roleSource?.noFurtherDelegation,
+      roleSource?.NO_FURTHER_DELEGATION,
+      source?.no_further_delegation,
+      source?.noFurtherDelegation,
+      source?.NO_FURTHER_DELEGATION,
+      payload?.no_further_delegation,
+      payload?.noFurtherDelegation,
+      payload?.NO_FURTHER_DELEGATION
     )
   };
 }
@@ -2314,6 +2378,8 @@ function lineageFieldsFromLocalCodexMeta(meta) {
     threadDepth: meta.threadDepth,
     agentRole: meta.agentRole,
     agentNickname: meta.agentNickname,
+    agentKind: meta.agentKind,
+    noFurtherDelegation: meta.noFurtherDelegation,
     lineageRole: classifyLocalCodexLineageRole(meta)
   };
 }
@@ -2326,39 +2392,38 @@ function classifyLocalCodexLineageRole(meta) {
     return classifiedRole;
   }
 
+  if (hasAuxiliaryLineageDefaultOtherSignal(meta)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
   return LINEAGE_CATEGORY_O2;
 }
 
 function classifyExplicitStructuredLineageRole(meta) {
-  const roleText = normalizeLineageSignalText([
-    meta?.agentRole,
-    meta?.agentNickname
-  ]);
+  const macoRole = classifyMacoLineageMetadata(meta);
+  if (macoRole) {
+    return macoRole;
+  }
+
   const threadSourceText = normalizeLineageSignalText([meta?.threadSource]);
 
-  if (hasOtherLineageSignal(roleText)) {
+  if (hasOtherLineageSignal(threadSourceText)) {
     return LINEAGE_CATEGORY_OTHER;
-  }
-
-  if (hasO2LineageSignal(roleText)) {
-    return LINEAGE_CATEGORY_O2;
-  }
-
-  if (hasO1LineageSignal(roleText)) {
-    return LINEAGE_CATEGORY_O1;
   }
 
   if (hasO2LineageSignal(threadSourceText)) {
     return LINEAGE_CATEGORY_O2;
   }
 
+  if (hasO1LineageSignal(threadSourceText)) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
   return undefined;
 }
 
 function classifyStructuredAuxiliaryLineageRole(meta) {
-  const sourceText = normalizeLineageSignalText([
-    typeof meta?.source === 'string' ? meta.source : JSON.stringify(meta?.source || {})
-  ]);
+  const sourceText = lineageSignalTextFromStructuredSource(meta?.source);
 
   if (hasOtherLineageSignal(sourceText)) {
     return LINEAGE_CATEGORY_OTHER;
@@ -2381,18 +2446,10 @@ function classifyPromptDeclaredLineageRole(value) {
     return undefined;
   }
 
-  const roleMatch = /(?:^|\r?\n)\s*Role\s*:\s*([^\r\n]+)/i.exec(text);
-  if (roleMatch) {
-    const role = normalizeLineageSignalText([roleMatch[1]]);
-    if (hasOtherLineageSignal(role)) {
-      return LINEAGE_CATEGORY_OTHER;
-    }
-    if (hasO2LineageSignal(role)) {
-      return LINEAGE_CATEGORY_O2;
-    }
-    if (hasO1LineageSignal(role)) {
-      return LINEAGE_CATEGORY_O1;
-    }
+  const macoPrefix = parseMacoLineagePrefix(text);
+  const macoRole = classifyMacoLineageMetadata(macoPrefix);
+  if (macoRole) {
+    return macoRole;
   }
 
   if (LOCAL_CODEX_OTHER_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
@@ -2400,6 +2457,116 @@ function classifyPromptDeclaredLineageRole(value) {
   }
 
   if (LOCAL_CODEX_O1_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
+    return LINEAGE_CATEGORY_O1;
+  }
+
+  return undefined;
+}
+
+function parseMacoLineagePrefix(value) {
+  const text = stringOrUndefined(value);
+  if (!text) {
+    return {};
+  }
+
+  const metadata = {};
+  const lines = text.split(/\r?\n/).slice(0, 12);
+  for (const line of lines) {
+    const match = /^\s*(ROLE|AGENT_KIND|AGENT_LABEL|PARENT_THREAD_ID|THREAD_DEPTH|NO_FURTHER_DELEGATION)\s*:\s*(.*?)\s*$/i.exec(line);
+    if (!match) {
+      continue;
+    }
+
+    const key = match[1].toUpperCase();
+    const valueText = match[2];
+    if (key === 'ROLE') {
+      metadata.agentRole = stringOrUndefined(valueText);
+    } else if (key === 'AGENT_KIND') {
+      metadata.agentKind = stringOrUndefined(valueText);
+    } else if (key === 'AGENT_LABEL') {
+      metadata.agentNickname = stringOrUndefined(valueText);
+    } else if (key === 'PARENT_THREAD_ID') {
+      metadata.parentThreadId = normalizedParentThreadIdFromPrefix(valueText);
+    } else if (key === 'THREAD_DEPTH') {
+      metadata.threadDepth = firstNumber(valueText);
+    } else if (key === 'NO_FURTHER_DELEGATION') {
+      metadata.noFurtherDelegation = firstBoolean(valueText);
+    }
+  }
+
+  return metadata;
+}
+
+function normalizedParentThreadIdFromPrefix(value) {
+  const text = stringOrUndefined(value);
+  if (!text || /^none|null|undefined$/i.test(text)) {
+    return undefined;
+  }
+  return text;
+}
+
+function classifyMacoLineageMetadata(meta) {
+  const role = classifyMacoAgentRole(meta?.agentRole);
+  if (role) {
+    return role;
+  }
+
+  const agentKind = normalizeLineageSignalText([meta?.agentKind]);
+  const threadDepth = typeof meta?.threadDepth === 'number' && Number.isFinite(meta.threadDepth)
+    ? meta.threadDepth
+    : firstNumber(meta?.threadDepth);
+  const noFurtherDelegation = booleanOrUndefined(meta?.noFurtherDelegation);
+
+  if (hasOtherAgentKind(agentKind) || noFurtherDelegation === true || threadDepth >= 2) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (/\borchestrator\b/.test(agentKind)) {
+    if (threadDepth === 0) {
+      return LINEAGE_CATEGORY_O2;
+    }
+    if (threadDepth === 1) {
+      return LINEAGE_CATEGORY_O1;
+    }
+  }
+
+  return undefined;
+}
+
+function classifyMacoAgentRole(value) {
+  const roleText = normalizeLineageSignalText([value]);
+  if (!roleText) {
+    return undefined;
+  }
+
+  const canonical = roleText.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (canonical === 'o2_top_supervisor') {
+    return LINEAGE_CATEGORY_O2;
+  }
+  if (canonical === 'o1_child_orchestrator') {
+    return LINEAGE_CATEGORY_O1;
+  }
+  if (
+    canonical === 'terminal_worker' ||
+    canonical === 'researcher' ||
+    canonical === 'review_auditor' ||
+    canonical === 'expert_coder' ||
+    canonical === 'expert_reviewer' ||
+    canonical === 'expert_explorer' ||
+    canonical === 'expert_researcher'
+  ) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (hasOtherLineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  if (hasO2LineageSignal(roleText)) {
+    return LINEAGE_CATEGORY_O2;
+  }
+
+  if (hasO1LineageSignal(roleText)) {
     return LINEAGE_CATEGORY_O1;
   }
 
@@ -2427,8 +2594,7 @@ function hasO1LineageSignal(text) {
     (
       /\bo1\b/.test(text) ||
       /\bo1(?:agent|orchestrator|supervisor|coordinator)\b/.test(text) ||
-      /child[\s_-]*orchestrator/.test(text) ||
-      /orchestrator|supervisor|coordinator/.test(text)
+      /child[\s_-]*orchestrator/.test(text)
     )
   );
 }
@@ -2436,8 +2602,60 @@ function hasO1LineageSignal(text) {
 function hasOtherLineageSignal(text) {
   return Boolean(
     text &&
-    /worker|researcher|explorer/.test(text)
+    /worker|researcher|explorer|auditor|terminal|expert[\s_-]*(?:coder|reviewer|explorer|researcher)/.test(text)
   );
+}
+
+function hasOtherAgentKind(text) {
+  return Boolean(text && /\b(?:worker|researcher|auditor)\b/.test(text));
+}
+
+function hasAuxiliaryLineageDefaultOtherSignal(meta) {
+  const threadDepth = typeof meta?.threadDepth === 'number' && Number.isFinite(meta.threadDepth)
+    ? meta.threadDepth
+    : firstNumber(meta?.threadDepth);
+  return Boolean(
+    normalizeThreadId(meta?.parentThreadId) ||
+    threadDepth > 0 ||
+    booleanOrUndefined(meta?.noFurtherDelegation) === true ||
+    hasOtherAgentKind(normalizeLineageSignalText([meta?.agentKind]))
+  );
+}
+
+function lineageSignalTextFromStructuredSource(source) {
+  if (typeof source === 'string') {
+    return normalizeLineageSignalText([source]);
+  }
+
+  return normalizeLineageSignalText(lineageSignalValuesFromStructuredSource(source));
+}
+
+function lineageSignalValuesFromStructuredSource(value, depth = 0) {
+  if (depth > 4 || value === undefined || value === null) {
+    return [];
+  }
+
+  if (typeof value === 'string') {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => lineageSignalValuesFromStructuredSource(item, depth + 1));
+  }
+
+  if (typeof value !== 'object') {
+    return [];
+  }
+
+  const values = [];
+  for (const [key, child] of Object.entries(value)) {
+    if (/^(?:agent_?label|agent_?nickname|nickname|label|display_?name|title)$/i.test(key)) {
+      continue;
+    }
+    values.push(key);
+    values.push(...lineageSignalValuesFromStructuredSource(child, depth + 1));
+  }
+  return values;
 }
 
 function getSessionLineageRole(session) {
@@ -2449,10 +2667,13 @@ function getSessionLineageRole(session) {
 
   const role = normalizeLineageRole(session?.lineageRole);
   if (role) {
+    if (role === LINEAGE_CATEGORY_O2 && hasAuxiliaryLineageDefaultOtherSignal(session)) {
+      return LINEAGE_CATEGORY_OTHER;
+    }
     return role;
   }
 
-  if (isLocalCodexSession(session) && !normalizeThreadId(session?.parentThreadId)) {
+  if (isLocalCodexSession(session) && !hasAuxiliaryLineageDefaultOtherSignal(session)) {
     return LINEAGE_CATEGORY_O2;
   }
 
@@ -2510,6 +2731,40 @@ function firstNumber(...values) {
       if (Number.isFinite(parsed)) {
         return parsed;
       }
+    }
+  }
+  return undefined;
+}
+
+function firstBoolean(...values) {
+  for (const value of values) {
+    const parsed = booleanOrUndefined(value);
+    if (parsed !== undefined) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function booleanOrUndefined(value) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value === 1) {
+      return true;
+    }
+    if (value === 0) {
+      return false;
+    }
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no'].includes(normalized)) {
+      return false;
     }
   }
   return undefined;
@@ -2624,6 +2879,7 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
   let lastFailedAt;
   let lastActivityAt;
   let lastStartedOrder = -1;
+  let lastParsedRecordOrder = -1;
   let lastTurnStatusEvent;
 
   const lines = text.split(/\r?\n/);
@@ -2640,6 +2896,7 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
       continue;
     }
 
+    lastParsedRecordOrder = lineOrder;
     const timestamp = dateStringOrUndefined(record.timestamp);
     if (timestamp) {
       lastActivityAt = latestDateString([lastActivityAt, timestamp]);
@@ -2650,7 +2907,6 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
     }
 
     const completedAt = dateStringOrUndefined(record.payload.completed_at);
-    const eventAt = latestDateString([timestamp, completedAt]);
     if (completedAt) {
       lastActivityAt = latestDateString([lastActivityAt, completedAt]);
     }
@@ -2662,18 +2918,20 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
       lastStartedOrder = lineOrder;
       lastTurnStatusEvent = { type: 'started', at: timestamp, order: lineOrder };
     } else if (record.payload.type === 'task_complete') {
-      if (eventAt) {
-        lastCompletedAt = eventAt;
+      const terminalAt = completedAt || timestamp;
+      if (terminalAt) {
+        lastCompletedAt = terminalAt;
       }
       if (lineOrder >= lastStartedOrder) {
-        lastTurnStatusEvent = { type: 'completed', at: eventAt, order: lineOrder };
+        lastTurnStatusEvent = { type: 'completed', at: terminalAt, order: lineOrder };
       }
     } else if (record.payload.type === 'turn_aborted') {
-      if (eventAt) {
-        lastAbortedAt = eventAt;
+      const terminalAt = completedAt || timestamp;
+      if (terminalAt) {
+        lastAbortedAt = terminalAt;
       }
       if (lineOrder >= lastStartedOrder) {
-        lastTurnStatusEvent = { type: 'aborted', at: eventAt, order: lineOrder };
+        lastTurnStatusEvent = { type: 'aborted', at: terminalAt, order: lineOrder };
       }
     } else if (record.payload.type === 'error') {
       if (timestamp) {
@@ -2686,15 +2944,28 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
   }
 
   let status;
-  if (lastTurnStatusEvent?.type === 'completed') {
-    status = 'completed';
-  } else if (lastTurnStatusEvent?.type === 'aborted') {
-    status = 'aborted';
-  } else if (lastTurnStatusEvent?.type === 'failed') {
-    status = 'failed';
+  const lastTerminalStatus = terminalLocalCodexStatusFromTurnEvent(lastTurnStatusEvent);
+  const activeAt = latestLocalCodexActivityTime(stat, lastStartedAt, lastActivityAt);
+  if (lastTerminalStatus && isTurnStatusSemanticallyOlderThanLatestStart(lastTurnStatusEvent, lastStartedAt)) {
+    status = activeAt ? activeLocalCodexStatusFromTime(activeAt) : undefined;
+    if (activeAt) {
+      lastActivityAt = latestDateString([lastActivityAt, new Date(activeAt).toISOString()]);
+    }
+  } else if (
+    lastTurnStatusEvent?.type === 'failed' &&
+    hasActiveWorkAfterErrorTurnStatus(lastTurnStatusEvent, lastParsedRecordOrder, lastActivityAt, stat)
+  ) {
+    status = 'running';
+    if (activeAt) {
+      lastActivityAt = latestDateString([lastActivityAt, new Date(activeAt).toISOString()]);
+    }
+  } else if (lastTerminalStatus) {
+    status = lastTerminalStatus;
   } else if (lastStartedAt) {
-    const activeAt = Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : Date.parse(lastStartedAt);
-    status = Date.now() - activeAt > LOCAL_CODEX_RUNNING_STALE_MS ? 'stale' : 'running';
+    status = activeAt ? activeLocalCodexStatusFromTime(activeAt) : undefined;
+    if (activeAt) {
+      lastActivityAt = latestDateString([lastActivityAt, new Date(activeAt).toISOString()]);
+    }
   } else if (lastCompletedAt) {
     status = 'completed';
   } else if (lastAbortedAt) {
@@ -2711,6 +2982,74 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
     lastFailedAt,
     lastActivityAt
   };
+}
+
+function terminalLocalCodexStatusFromTurnEvent(event) {
+  if (event?.type === 'completed') {
+    return 'completed';
+  }
+  if (event?.type === 'aborted') {
+    return 'aborted';
+  }
+  if (event?.type === 'failed') {
+    return 'failed';
+  }
+  return undefined;
+}
+
+function isTurnStatusSemanticallyOlderThanLatestStart(event, lastStartedAt) {
+  const eventTime = Date.parse(event?.at || '');
+  const startedTime = Date.parse(lastStartedAt || '');
+  return Boolean(
+    Number.isFinite(eventTime) &&
+    Number.isFinite(startedTime) &&
+    eventTime < startedTime
+  );
+}
+
+function hasActiveWorkAfterErrorTurnStatus(event, lastParsedRecordOrder, lastActivityAt, stat) {
+  if (!event) {
+    return false;
+  }
+
+  const eventTime = Date.parse(event.at || '');
+  const lastActivityTime = Date.parse(lastActivityAt || '');
+  const fileMtime = Number.isFinite(stat?.mtimeMs) ? stat.mtimeMs : undefined;
+
+  const hasLaterRecord = lastParsedRecordOrder > event.order ||
+    (
+      Number.isFinite(eventTime) &&
+      Number.isFinite(lastActivityTime) &&
+      lastActivityTime > eventTime
+    );
+  const hasNewerFileWrite = Number.isFinite(eventTime) &&
+    fileMtime &&
+    fileMtime - eventTime > LOCAL_CODEX_TERMINAL_MTIME_GRACE_MS;
+  const hasRecentFileWrite = fileMtime &&
+    Date.now() - fileMtime <= LOCAL_CODEX_RUNNING_STALE_MS;
+
+  return Boolean(
+    (hasLaterRecord || hasNewerFileWrite) &&
+    hasRecentFileWrite
+  );
+}
+
+function latestLocalCodexActivityTime(stat, ...dateStrings) {
+  let latest = Number.isFinite(stat?.mtimeMs) ? stat.mtimeMs : undefined;
+  for (const value of dateStrings) {
+    const time = Date.parse(value || '');
+    if (!Number.isFinite(time)) {
+      continue;
+    }
+    if (latest === undefined || time > latest) {
+      latest = time;
+    }
+  }
+  return latest;
+}
+
+function activeLocalCodexStatusFromTime(activeAt) {
+  return Date.now() - activeAt > LOCAL_CODEX_RUNNING_STALE_MS ? 'stale' : 'running';
 }
 
 function titleFromLocalCodexSession(meta, indexEntry) {
