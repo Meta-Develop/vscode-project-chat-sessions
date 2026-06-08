@@ -40,6 +40,10 @@ const LOCAL_CODEX_O1_PROMPT_MARKERS = [
 const LOCAL_CODEX_OTHER_PROMPT_MARKERS = [
   'You are a worker in an opt-in local Codex CLI supervised run.'
 ];
+const MACO_LINEAGE_PREFIX_LINES = 12;
+const MACO_LINEAGE_EARLY_SCAN_LINES = 96;
+const MACO_LINEAGE_BLOCK_MAX_LINES = 8;
+const MACO_LINEAGE_METADATA_PATTERN = /^\s*(ROLE|AGENT_KIND|AGENT_LABEL|PARENT_THREAD_ID|THREAD_DEPTH|NO_FURTHER_DELEGATION)\s*:\s*(.*?)\s*$/i;
 
 const localCodexDiscoveryCache = {
   key: undefined,
@@ -1406,6 +1410,7 @@ async function importCodexSessionCandidates(context, workspaceKey, discovered) {
       agentNickname: candidate.agentNickname,
       agentKind: candidate.agentKind,
       noFurtherDelegation: candidate.noFurtherDelegation,
+      isDelegatedLocalCodexSession: candidate.isDelegatedLocalCodexSession,
       lineageRole: candidate.lineageRole
     });
     changed += 1;
@@ -1579,6 +1584,7 @@ function mergeSessionLineageMetadata(session, candidate) {
     'agentNickname',
     'agentKind',
     'noFurtherDelegation',
+    'isDelegatedLocalCodexSession',
     'lineageRole'
   ]) {
     if (candidate[field] !== undefined && session[field] !== candidate[field]) {
@@ -2240,7 +2246,7 @@ function readLocalCodexSessionMeta(filePath) {
       cwd: stringOrUndefined(record.payload.cwd),
       timestamp: stringOrUndefined(record.payload.timestamp),
       source: record.payload.source,
-      threadSource: stringOrUndefined(record.payload.thread_source),
+      threadSource: firstString(record.payload.thread_source, record.payload.threadSource),
       ...extractLocalCodexLineageMetadata(record.payload),
       hasUserMessage,
       firstUserMessage
@@ -2258,9 +2264,11 @@ function extractLocalCodexLineageMetadata(payload) {
   const source = payload?.source;
   const threadSpawn = firstObject(
     source?.subagent?.thread_spawn,
+    source?.subagent?.threadSpawn,
     source?.thread_spawn,
     source?.threadSpawn,
     payload?.subagent?.thread_spawn,
+    payload?.subagent?.threadSpawn,
     payload?.thread_spawn,
     payload?.threadSpawn,
     payload
@@ -2368,7 +2376,8 @@ function extractLocalCodexLineageMetadata(payload) {
       payload?.no_further_delegation,
       payload?.noFurtherDelegation,
       payload?.NO_FURTHER_DELEGATION
-    )
+    ),
+    isDelegatedLocalCodexSession: hasDelegatedLocalCodexSourceMetadata(payload) || undefined
   };
 }
 
@@ -2380,11 +2389,16 @@ function lineageFieldsFromLocalCodexMeta(meta) {
     agentNickname: meta.agentNickname,
     agentKind: meta.agentKind,
     noFurtherDelegation: meta.noFurtherDelegation,
+    isDelegatedLocalCodexSession: meta.isDelegatedLocalCodexSession,
     lineageRole: classifyLocalCodexLineageRole(meta)
   };
 }
 
 function classifyLocalCodexLineageRole(meta) {
+  if (hasDelegatedLocalCodexSessionSignal(meta)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
   const classifiedRole = classifyExplicitStructuredLineageRole(meta) ||
     classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
     classifyStructuredAuxiliaryLineageRole(meta);
@@ -2400,6 +2414,10 @@ function classifyLocalCodexLineageRole(meta) {
 }
 
 function classifyExplicitStructuredLineageRole(meta) {
+  if (hasDelegatedLocalCodexSessionSignal(meta)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
   const macoRole = classifyMacoLineageMetadata(meta);
   if (macoRole) {
     return macoRole;
@@ -2469,16 +2487,69 @@ function parseMacoLineagePrefix(value) {
     return {};
   }
 
-  const metadata = {};
-  const lines = text.split(/\r?\n/).slice(0, 12);
-  for (const line of lines) {
-    const match = /^\s*(ROLE|AGENT_KIND|AGENT_LABEL|PARENT_THREAD_ID|THREAD_DEPTH|NO_FURTHER_DELEGATION)\s*:\s*(.*?)\s*$/i.exec(line);
-    if (!match) {
-      continue;
+  const lines = text.split(/\r?\n/);
+  const prefixEntries = lines
+    .slice(0, MACO_LINEAGE_PREFIX_LINES)
+    .map(parseMacoLineageMetadataEntry)
+    .filter(Boolean);
+  const prefixMetadata = macoLineageMetadataFromEntries(prefixEntries);
+  if (classifyMacoLineageMetadata(prefixMetadata)) {
+    return prefixMetadata;
+  }
+
+  return findEarlyMacoLineageMetadataBlock(lines.slice(0, MACO_LINEAGE_EARLY_SCAN_LINES)) ||
+    prefixMetadata;
+}
+
+function findEarlyMacoLineageMetadataBlock(lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const entries = [];
+    const keys = new Set();
+
+    for (
+      let cursor = index;
+      cursor < lines.length && cursor < index + MACO_LINEAGE_BLOCK_MAX_LINES;
+      cursor += 1
+    ) {
+      const entry = parseMacoLineageMetadataEntry(lines[cursor]);
+      if (!entry) {
+        break;
+      }
+
+      entries.push(entry);
+      keys.add(entry.key);
     }
 
-    const key = match[1].toUpperCase();
-    const valueText = match[2];
+    if (isMacoLineageMetadataBlock(keys)) {
+      return macoLineageMetadataFromEntries(entries);
+    }
+  }
+
+  return undefined;
+}
+
+function isMacoLineageMetadataBlock(keys) {
+  return keys.size >= 2 && (keys.has('ROLE') || keys.has('AGENT_KIND'));
+}
+
+function parseMacoLineageMetadataEntry(line) {
+  const match = MACO_LINEAGE_METADATA_PATTERN.exec(line);
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    key: match[1].toUpperCase(),
+    value: match[2]
+  };
+}
+
+function macoLineageMetadataFromEntries(entries) {
+  const metadata = {};
+  for (const entry of entries) {
+    const key = entry.key;
+    const valueText = entry.value;
+
     if (key === 'ROLE') {
       metadata.agentRole = stringOrUndefined(valueText);
     } else if (key === 'AGENT_KIND') {
@@ -2620,6 +2691,71 @@ function hasAuxiliaryLineageDefaultOtherSignal(meta) {
     booleanOrUndefined(meta?.noFurtherDelegation) === true ||
     hasOtherAgentKind(normalizeLineageSignalText([meta?.agentKind]))
   );
+}
+
+function hasDelegatedLocalCodexSessionSignal(meta) {
+  return booleanOrUndefined(meta?.isDelegatedLocalCodexSession) === true ||
+    hasDelegatedLocalCodexSourceMetadata(meta);
+}
+
+function hasDelegatedLocalCodexSourceMetadata(meta) {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+    return false;
+  }
+
+  if (isSubagentThreadSource(meta.threadSource) || isSubagentThreadSource(meta.thread_source)) {
+    return true;
+  }
+
+  if (
+    hasStructuredDelegationMarker(meta.subagent) ||
+    hasStructuredDelegationMarker(meta.thread_spawn) ||
+    hasStructuredDelegationMarker(meta.threadSpawn)
+  ) {
+    return true;
+  }
+
+  const source = meta.source;
+  if (source && typeof source === 'object' && !Array.isArray(source)) {
+    if (
+      isSubagentThreadSource(source.threadSource) ||
+      isSubagentThreadSource(source.thread_source) ||
+      hasStructuredDelegationMarker(source.subagent) ||
+      hasStructuredDelegationMarker(source.thread_spawn) ||
+      hasStructuredDelegationMarker(source.threadSpawn)
+    ) {
+      return true;
+    }
+  }
+
+  const payload = meta.payload;
+  if (payload && payload !== meta && typeof payload === 'object' && !Array.isArray(payload)) {
+    return hasDelegatedLocalCodexSourceMetadata(payload);
+  }
+
+  return false;
+}
+
+function isSubagentThreadSource(value) {
+  const text = stringOrUndefined(value);
+  return Boolean(text && text.replace(/[^a-z0-9]+/gi, '').toLowerCase() === 'subagent');
+}
+
+function hasStructuredDelegationMarker(value) {
+  if (value === undefined || value === null) {
+    return false;
+  }
+
+  const booleanValue = booleanOrUndefined(value);
+  if (booleanValue !== undefined) {
+    return booleanValue;
+  }
+
+  if (typeof value === 'string') {
+    return !/^(?:none|null|undefined)$/i.test(value.trim());
+  }
+
+  return true;
 }
 
 function lineageSignalTextFromStructuredSource(source) {

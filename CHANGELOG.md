@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.19
+
+- Hide delegated/MACO spawned local Codex sessions from the default tree by
+  classifying explicit delegated session metadata as Other lineage sessions.
+- Detect MACO lineage metadata even when the role block appears after an early
+  prompt preamble.
+
 ## 0.0.18
 
 - Use strict Multi-Agent_Coding_Orchestrator role-prefix classification for
