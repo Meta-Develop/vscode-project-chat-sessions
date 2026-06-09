@@ -1197,8 +1197,12 @@ function getSessionIcon(session) {
     return new vscode.ThemeIcon('error', new vscode.ThemeColor('problemsErrorIcon.foreground'));
   }
 
-  if (session.status === 'aborted' || session.status === 'stale') {
+  if (session.status === 'aborted') {
     return new vscode.ThemeIcon('debug-stop', new vscode.ThemeColor('descriptionForeground'));
+  }
+
+  if (session.status === 'stale') {
+    return new vscode.ThemeIcon('circle-large-outline', new vscode.ThemeColor('descriptionForeground'));
   }
 
   if (isSessionUnread(session)) {
@@ -1222,7 +1226,7 @@ function getSessionStatusLabel(session) {
     case 'aborted':
       return 'Aborted';
     case 'stale':
-      return 'Stopped';
+      return 'Inactive';
     default:
       return undefined;
   }
@@ -3165,7 +3169,7 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
       lastStartedOrder = lineOrder;
       lastTurnStatusEvent = { type: 'started', at: timestamp, order: lineOrder };
     } else if (record.payload.type === 'task_complete') {
-      const terminalAt = completedAt || timestamp;
+      const terminalAt = latestDateString([timestamp, completedAt]);
       if (terminalAt) {
         lastCompletedAt = terminalAt;
       }
@@ -3173,7 +3177,7 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
         lastTurnStatusEvent = { type: 'completed', at: terminalAt, order: lineOrder };
       }
     } else if (record.payload.type === 'turn_aborted') {
-      const terminalAt = completedAt || timestamp;
+      const terminalAt = latestDateString([timestamp, completedAt]);
       if (terminalAt) {
         lastAbortedAt = terminalAt;
       }
@@ -3423,12 +3427,38 @@ function stringOrUndefined(value) {
 }
 
 function dateStringOrUndefined(value) {
-  if (!value) {
+  let date;
+
+  if (value instanceof Date || Object.prototype.toString.call(value) === '[object Date]') {
+    date = new Date(value.getTime());
+  } else if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return undefined;
+    }
+    date = new Date(timestampNumberToMilliseconds(value));
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      if (!Number.isFinite(numeric)) {
+        return undefined;
+      }
+      date = new Date(timestampNumberToMilliseconds(numeric));
+    } else {
+      date = new Date(trimmed);
+    }
+  } else {
     return undefined;
   }
 
-  const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function timestampNumberToMilliseconds(value) {
+  return Math.abs(value) < 1000000000000 ? value * 1000 : value;
 }
 
 function getTabUri(tab) {

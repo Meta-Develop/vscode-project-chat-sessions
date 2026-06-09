@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.21
+
+- Parse numeric Codex `completed_at` values as Unix seconds when appropriate.
+- Keep completed local Codex sessions from falling back to stale or inactive
+  status when terminal timestamps are present.
+- Show stale local Codex sessions and sessions without a recent terminal event
+  as Inactive instead of Stopped.
+
 ## 0.0.20
 
 - Replace separate lineage role toolbar actions with one filter picker that
