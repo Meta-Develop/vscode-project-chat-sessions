@@ -42,6 +42,11 @@ const LOCAL_CODEX_O1_PROMPT_MARKERS = [
 const LOCAL_CODEX_OTHER_PROMPT_MARKERS = [
   'You are a worker in an opt-in local Codex CLI supervised run.'
 ];
+const LOCAL_CODEX_DELEGATED_WORKER_SELF_DESCRIPTION_PATTERNS = [
+  /(?:^|[\r\n])\s*You are (?:an?\s+)?delegated\b[^\r\n.!?]{0,160}\bworker\b/i,
+  /(?:^|[\r\n])\s*(?:The\s+)?coordinator\b[^\r\n.!?]{0,160}\b(?:launched|spawned|started|assigned)\b[^\r\n.!?]{0,160}\bas (?:an?\s+)?delegated\b[^\r\n.!?]{0,120}\bworker\b/i,
+  /(?:^|[\r\n])\s*(?:You|This\s+session|This\s+agent)\b[^\r\n.!?]{0,160}\b(?:launched|spawned|started|assigned)\b[^\r\n.!?]{0,160}\bby (?:the\s+)?coordinator\b[^\r\n.!?]{0,160}\bas (?:an?\s+)?delegated\b[^\r\n.!?]{0,120}\bworker\b/i
+];
 const MACO_LINEAGE_PREFIX_LINES = 12;
 const MACO_LINEAGE_EARLY_SCAN_LINES = 96;
 const MACO_LINEAGE_BLOCK_MAX_LINES = 8;
@@ -2585,6 +2590,10 @@ function classifyPromptDeclaredLineageRole(value) {
     return macoRole;
   }
 
+  if (hasDelegatedWorkerSelfDescriptionPrompt(text)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
   if (LOCAL_CODEX_OTHER_PROMPT_MARKERS.some((marker) => text.includes(marker))) {
     return LINEAGE_CATEGORY_OTHER;
   }
@@ -2594,6 +2603,32 @@ function classifyPromptDeclaredLineageRole(value) {
   }
 
   return undefined;
+}
+
+function hasDelegatedWorkerSelfDescriptionPrompt(value) {
+  const text = lineagePromptDeclarationText(value);
+  if (!text) {
+    return false;
+  }
+
+  return LOCAL_CODEX_DELEGATED_WORKER_SELF_DESCRIPTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function lineagePromptDeclarationText(value) {
+  let text = stringOrUndefined(value);
+  if (!text) {
+    return undefined;
+  }
+
+  text = textAfterLastMarker(text, '</environment_context>');
+  text = textAfterLastMarker(text, '</INSTRUCTIONS>');
+
+  const requestMarker = /(?:^|\n)##\s*My request for Codex:\s*/i.exec(text);
+  if (requestMarker) {
+    text = text.slice(requestMarker.index + requestMarker[0].length);
+  }
+
+  return text.trimStart().slice(0, 2048);
 }
 
 function parseMacoLineagePrefix(value) {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.22
+
+- Hide generic delegated Codex worker sessions from the default tree when their
+  first prompt self-identifies as a delegated worker but lacks structured
+  lineage metadata.
+- Preserve canonical MACO `ROLE` prefix precedence for O2/O1/Other lineage
+  classification.
+
 ## 0.0.21
 
 - Parse numeric Codex `completed_at` values as Unix seconds when appropriate.
