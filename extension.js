@@ -2320,8 +2320,20 @@ function readLocalCodexSessionMeta(filePath) {
 
     if (/"type"\s*:\s*"user_message"/.test(line) || /"role"\s*:\s*"user"/.test(line)) {
       hasUserMessage = true;
-      firstUserMessage = firstUserMessage || extractLocalCodexUserMessageText(line);
-      if (meta) {
+      const userMessageText = extractLocalCodexUserMessageText(line);
+      if (
+        userMessageText &&
+        (
+          !firstUserMessage ||
+          (
+            isContextOnlyLocalCodexUserMessage(firstUserMessage) &&
+            lineagePromptDeclarationText(userMessageText)
+          )
+        )
+      ) {
+        firstUserMessage = userMessageText;
+      }
+      if (meta && firstUserMessage && !isContextOnlyLocalCodexUserMessage(firstUserMessage)) {
         return { ...meta, hasUserMessage, firstUserMessage };
       }
       continue;
@@ -2353,12 +2365,16 @@ function readLocalCodexSessionMeta(filePath) {
       firstUserMessage
     };
 
-    if (hasUserMessage) {
+    if (hasUserMessage && firstUserMessage && !isContextOnlyLocalCodexUserMessage(firstUserMessage)) {
       return meta;
     }
   }
 
   return meta ? { ...meta, hasUserMessage, firstUserMessage } : undefined;
+}
+
+function isContextOnlyLocalCodexUserMessage(value) {
+  return Boolean(stringOrUndefined(value) && !lineagePromptDeclarationText(value));
 }
 
 function extractLocalCodexLineageMetadata(payload) {

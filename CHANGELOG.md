@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.23
+
+- Read past context-only AGENTS/environment prelude user messages when local
+  Codex metadata needs the first meaningful prompt for delegated-worker lineage
+  classification.
+- Keep `hasUserMessage` true for any user record while preserving ordinary
+  single-prompt sessions and canonical MACO `ROLE` prefix precedence.
+
 ## 0.0.22
 
 - Hide generic delegated Codex worker sessions from the default tree when their
