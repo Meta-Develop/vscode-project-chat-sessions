@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.20
+
+- Replace separate lineage role toolbar actions with one filter picker that
+  includes default, O2 root/top-supervisor, O1 MACO child-orchestrator,
+  spawned/delegated, and source-lineage choices.
+- Refresh local Codex metadata before applying lineage filters so stale saved
+  sessions can be reclassified from current session files.
+- Give canonical MACO role metadata precedence in lineage classification while
+  keeping delegated/native subagent sessions under spawned/delegated agents.
+
 ## 0.0.19
 
 - Hide delegated/MACO spawned local Codex sessions from the default tree by

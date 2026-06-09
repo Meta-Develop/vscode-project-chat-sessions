@@ -19,8 +19,9 @@ when the official ChatGPT/Codex history remains account-wide.
 - Choose whether session grouping and sorting use latest activity time or the
   original session creation time.
 - Show only sessions saved for the active workspace root.
-- Filter local Codex session lineages from a selected source session, with
-  O2, O1, and Other category views for delegated runs.
+- Filter local Codex sessions with one lineage filter menu: default view, O2
+  roots/top supervisors, O1 MACO child orchestrators, spawned/delegated agents,
+  or a full lineage from a selected source session.
 - Open a saved session in the Codex sidebar by clicking it in the Activity Bar
   view, with editor-tab fallback when the Codex sidebar deeplink is unavailable.
 - Rename, copy, and remove saved session shortcuts.
@@ -121,15 +122,18 @@ newer records or recent file activity show the turn is still active. Status
 refresh for already imported local sessions does not require automatic local
 import to be enabled and does not scan the Codex sessions directory.
 
-Use `Show O2 Codex Sessions`, `Show O1 Codex Sessions`, or
-`Show Other Codex Sessions` from the `Project Chats` view title to filter all
-saved local Codex sessions by role without choosing a source session. Use
-`Filter by Codex Lineage` to choose a source session and then show its full
-lineage, O2 root/top-supervisor or uncategorized local Codex sessions, O1
-child-orchestrator sessions, or Other worker, researcher, and auditor sessions.
-You can also right-click a session and choose `Filter Lineage from Session`.
-The active filter is shown in the tree message; use
-`Clear Lineage Filter` to return to the normal view.
+Use the `Filter by Codex Lineage` funnel in the `Project Chats` view title to
+choose the default view, O2 root/top-supervisor sessions, O1 MACO child
+orchestrators, spawned/delegated agents, or a full lineage from a selected
+source session. The filter refreshes local Codex metadata for the current
+trusted workspace before applying role or source filters, so stale imported
+sessions can be reclassified automatically. O1 only means explicit MACO child
+orchestrators; native Codex subagents, explorers, workers, researchers, and
+auditors appear under spawned/delegated agents. You can also run the direct O2,
+O1, spawned/delegated, and source-lineage commands from the Command Palette or
+right-click a session and choose `Filter Lineage from This Session`. The active
+filter is shown in the tree message; use `Clear Lineage Filter` to return to the
+normal view.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.

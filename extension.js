@@ -16,6 +16,8 @@ const LINEAGE_CATEGORY_ALL = 'all';
 const LINEAGE_CATEGORY_O2 = 'o2';
 const LINEAGE_CATEGORY_O1 = 'o1';
 const LINEAGE_CATEGORY_OTHER = 'other';
+const LINEAGE_FILTER_ACTION_DEFAULT = 'default';
+const LINEAGE_FILTER_ACTION_SOURCE = 'source';
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
@@ -177,7 +179,7 @@ class SessionTreeProvider {
         {
           type: 'empty',
           label: 'No sessions match this lineage filter',
-          description: 'Clear the filter or choose another category.'
+          description: 'Clear the filter or choose another role.'
         }
       ];
     }
@@ -187,7 +189,7 @@ class SessionTreeProvider {
         {
           type: 'empty',
           label: 'No visible sessions',
-          description: 'Auxiliary local Codex sessions are hidden until lineage filtering is active.'
+          description: 'Spawned/delegated local Codex sessions are hidden until filtering is active.'
         }
       ];
     }
@@ -226,13 +228,13 @@ async function activate(context) {
       await setLineageFilterFromPicker(context, provider);
     }),
     vscode.commands.registerCommand('projectChatSessions.showO2LineageSessions', async () => {
-      await setLineageRoleFilter(provider, LINEAGE_CATEGORY_O2);
+      await setLineageRoleFilter(context, provider, LINEAGE_CATEGORY_O2);
     }),
     vscode.commands.registerCommand('projectChatSessions.showO1LineageSessions', async () => {
-      await setLineageRoleFilter(provider, LINEAGE_CATEGORY_O1);
+      await setLineageRoleFilter(context, provider, LINEAGE_CATEGORY_O1);
     }),
     vscode.commands.registerCommand('projectChatSessions.showOtherLineageSessions', async () => {
-      await setLineageRoleFilter(provider, LINEAGE_CATEGORY_OTHER);
+      await setLineageRoleFilter(context, provider, LINEAGE_CATEGORY_OTHER);
     }),
     vscode.commands.registerCommand('projectChatSessions.clearLineageFilter', async () => {
       await provider.clearLineageFilter();
@@ -306,7 +308,7 @@ async function activate(context) {
     vscode.commands.registerCommand('projectChatSessions.filterLineageFromSession', async (input) => {
       const session = unwrapSession(input);
       if (session) {
-        await setLineageFilterFromSession(provider, session);
+        await setLineageFilterFromSession(context, provider, session);
       }
     }),
     vscode.commands.registerCommand('projectChatSessions.removeSession', async (input) => {
@@ -390,11 +392,78 @@ async function setDateBasis(context) {
 }
 
 async function setLineageFilterFromPicker(context, provider) {
-  const workspaceKey = requireWorkspaceKey();
-  if (!workspaceKey) {
+  if (!requireWorkspaceKey()) {
     return;
   }
 
+  const options = [
+    {
+      label: 'Default',
+      value: LINEAGE_FILTER_ACTION_DEFAULT,
+      description: 'Hide spawned/delegated agents'
+    },
+    {
+      label: 'O2 root/top-supervisor sessions',
+      value: LINEAGE_CATEGORY_O2,
+      description: 'MACO O2 and local Codex roots'
+    },
+    {
+      label: 'O1 MACO child orchestrators',
+      value: LINEAGE_CATEGORY_O1,
+      description: 'Only explicit MACO O1 sessions'
+    },
+    {
+      label: 'Spawned agents / Other',
+      value: LINEAGE_CATEGORY_OTHER,
+      description: 'Workers, researchers, native subagents, auditors'
+    },
+    {
+      label: 'Full lineage from a session...',
+      value: LINEAGE_FILTER_ACTION_SOURCE,
+      description: 'Choose a source session and lineage category'
+    }
+  ];
+
+  const selected = await vscode.window.showQuickPick(options, {
+    title: 'Project Chats Filter',
+    placeHolder: 'Choose which sessions to show',
+    activeItem: activeLineageFilterOption(options, provider.lineageFilter)
+  });
+  if (!selected) {
+    return;
+  }
+
+  if (selected.value === LINEAGE_FILTER_ACTION_DEFAULT) {
+    await provider.clearLineageFilter();
+    return;
+  }
+
+  if (selected.value === LINEAGE_FILTER_ACTION_SOURCE) {
+    await setLineageFilterFromSourcePicker(context, provider);
+    return;
+  }
+
+  await setLineageRoleFilter(context, provider, selected.value);
+}
+
+function activeLineageFilterOption(options, lineageFilter) {
+  if (!lineageFilter) {
+    return options.find((option) => option.value === LINEAGE_FILTER_ACTION_DEFAULT);
+  }
+
+  if (lineageFilter.sourceThreadId) {
+    return options.find((option) => option.value === LINEAGE_FILTER_ACTION_SOURCE);
+  }
+
+  return options.find((option) => option.value === lineageFilter.category);
+}
+
+async function setLineageFilterFromSourcePicker(context, provider) {
+  if (!(await refreshLocalCodexMetadataForLineageFilter(context, provider))) {
+    return;
+  }
+
+  const workspaceKey = getWorkspaceKey();
   const sessions = getSessions(context, workspaceKey);
   if (sessions.length === 0) {
     vscode.window.showWarningMessage('No sessions are saved for this workspace.');
@@ -420,16 +489,20 @@ async function setLineageFilterFromPicker(context, provider) {
     return;
   }
 
-  await setLineageFilterFromSession(provider, selected.session);
+  await setLineageFilterFromSession(context, provider, selected.session, { refreshBeforeApply: false });
 }
 
-async function setLineageRoleFilter(provider, category) {
+async function setLineageRoleFilter(context, provider, category) {
+  if (!(await refreshLocalCodexMetadataForLineageFilter(context, provider))) {
+    return;
+  }
+
   await provider.setLineageFilter({
     category
   });
 }
 
-async function setLineageFilterFromSession(provider, session) {
+async function setLineageFilterFromSession(context, provider, session, options = {}) {
   const category = await pickLineageCategory();
   if (!category) {
     return;
@@ -439,6 +512,12 @@ async function setLineageFilterFromSession(provider, session) {
   if (!sourceThreadId) {
     vscode.window.showWarningMessage('This session does not have a usable thread id for lineage filtering.');
     return;
+  }
+
+  if (options.refreshBeforeApply !== false) {
+    if (!(await refreshLocalCodexMetadataForLineageFilter(context, provider))) {
+      return;
+    }
   }
 
   await provider.setLineageFilter({
@@ -451,24 +530,24 @@ async function setLineageFilterFromSession(provider, session) {
 async function pickLineageCategory() {
   const options = [
     {
-      label: 'Full Lineage',
+      label: 'Full lineage',
       value: LINEAGE_CATEGORY_ALL,
       description: 'Show the selected source session and all descendants.'
     },
     {
-      label: 'O2',
+      label: 'O2 roots/top supervisors',
       value: LINEAGE_CATEGORY_O2,
-      description: 'Show root/top-supervisor and uncategorized local Codex sessions.'
+      description: 'Show MACO O2 and local Codex roots.'
     },
     {
-      label: 'O1',
+      label: 'O1 MACO child orchestrators',
       value: LINEAGE_CATEGORY_O1,
-      description: 'Show orchestrator, supervisor, and coordinator sessions.'
+      description: 'Show explicit MACO O1 sessions.'
     },
     {
-      label: 'Other',
+      label: 'Spawned/delegated agents',
       value: LINEAGE_CATEGORY_OTHER,
-      description: 'Show worker, researcher, subagent, and manual sessions.'
+      description: 'Show workers, researchers, native subagents, and auditors.'
     }
   ];
 
@@ -478,6 +557,19 @@ async function pickLineageCategory() {
   });
 
   return selected?.value;
+}
+
+async function refreshLocalCodexMetadataForLineageFilter(context, provider) {
+  if (!requireWorkspaceKey()) {
+    return false;
+  }
+
+  if (isLocalCodexFilesystemAccessAllowed()) {
+    await importDetectedCodexSessions(context, { forceLocal: true });
+    provider.refresh();
+  }
+
+  return true;
 }
 
 async function updateLineageFilterContext(active) {
@@ -2382,25 +2474,44 @@ function extractLocalCodexLineageMetadata(payload) {
 }
 
 function lineageFieldsFromLocalCodexMeta(meta) {
+  const lineageMeta = localCodexLineageMetadataWithPromptPrefix(meta);
   return {
-    parentThreadId: meta.parentThreadId,
-    threadDepth: meta.threadDepth,
-    agentRole: meta.agentRole,
-    agentNickname: meta.agentNickname,
-    agentKind: meta.agentKind,
-    noFurtherDelegation: meta.noFurtherDelegation,
-    isDelegatedLocalCodexSession: meta.isDelegatedLocalCodexSession,
-    lineageRole: classifyLocalCodexLineageRole(meta)
+    parentThreadId: lineageMeta.parentThreadId,
+    threadDepth: lineageMeta.threadDepth,
+    agentRole: lineageMeta.agentRole,
+    agentNickname: lineageMeta.agentNickname,
+    agentKind: lineageMeta.agentKind,
+    noFurtherDelegation: lineageMeta.noFurtherDelegation,
+    isDelegatedLocalCodexSession: lineageMeta.isDelegatedLocalCodexSession,
+    lineageRole: classifyLocalCodexLineageRole(lineageMeta)
+  };
+}
+
+function localCodexLineageMetadataWithPromptPrefix(meta) {
+  const promptMetadata = parseMacoLineagePrefix(meta?.firstUserMessage);
+  return {
+    ...meta,
+    parentThreadId: meta?.parentThreadId ?? promptMetadata.parentThreadId,
+    threadDepth: meta?.threadDepth ?? promptMetadata.threadDepth,
+    agentRole: meta?.agentRole ?? promptMetadata.agentRole,
+    agentNickname: meta?.agentNickname ?? promptMetadata.agentNickname,
+    agentKind: meta?.agentKind ?? promptMetadata.agentKind,
+    noFurtherDelegation: meta?.noFurtherDelegation ?? promptMetadata.noFurtherDelegation
   };
 }
 
 function classifyLocalCodexLineageRole(meta) {
-  if (hasDelegatedLocalCodexSessionSignal(meta)) {
-    return LINEAGE_CATEGORY_OTHER;
+  const macoRole = classifyMacoLineageMetadata(meta);
+  if (macoRole) {
+    return macoRole;
+  }
+
+  const promptRole = classifyPromptDeclaredLineageRole(meta?.firstUserMessage);
+  if (promptRole) {
+    return promptRole;
   }
 
   const classifiedRole = classifyExplicitStructuredLineageRole(meta) ||
-    classifyPromptDeclaredLineageRole(meta?.firstUserMessage) ||
     classifyStructuredAuxiliaryLineageRole(meta);
   if (classifiedRole) {
     return classifiedRole;
@@ -2414,10 +2525,6 @@ function classifyLocalCodexLineageRole(meta) {
 }
 
 function classifyExplicitStructuredLineageRole(meta) {
-  if (hasDelegatedLocalCodexSessionSignal(meta)) {
-    return LINEAGE_CATEGORY_OTHER;
-  }
-
   const macoRole = classifyMacoLineageMetadata(meta);
   if (macoRole) {
     return macoRole;
@@ -2435,6 +2542,10 @@ function classifyExplicitStructuredLineageRole(meta) {
 
   if (hasO1LineageSignal(threadSourceText)) {
     return LINEAGE_CATEGORY_O1;
+  }
+
+  if (hasDelegatedLocalCodexSessionSignal(meta)) {
+    return LINEAGE_CATEGORY_OTHER;
   }
 
   return undefined;
@@ -2831,15 +2942,15 @@ function normalizeLineageRole(value) {
 function labelForLineageCategory(value) {
   switch (value) {
     case LINEAGE_CATEGORY_ALL:
-      return 'Full Lineage';
+      return 'Full lineage';
     case LINEAGE_CATEGORY_O2:
-      return 'O2';
+      return 'O2 roots/top supervisors';
     case LINEAGE_CATEGORY_O1:
-      return 'O1';
+      return 'O1 MACO child orchestrators';
     case LINEAGE_CATEGORY_OTHER:
-      return 'Other';
+      return 'Spawned/delegated agents';
     default:
-      return 'Other';
+      return 'Spawned/delegated agents';
   }
 }
 
