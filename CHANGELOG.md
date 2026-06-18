@@ -2,6 +2,12 @@
 
 ## 0.0.23
 
+- Improve local Codex status detection with final-answer, patch-apply,
+  explicit status, and command-exit evidence.
+- Mark failed and aborted local Codex terminal states unread when they happen
+  after the session was last read, matching completed-session handling.
+- Show completed/read/unread terminal state details and terminal timestamps in
+  local Codex session tooltips.
 - Add a User/direct Codex lineage category so ordinary parentless local Codex
   sessions no longer appear in the O2 filter.
 - Accept both `ROLE:` and `ROLE=` MACO prompt prefixes for O2/O1/Other lineage

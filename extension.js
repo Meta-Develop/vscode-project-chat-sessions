@@ -34,7 +34,6 @@ const LOCAL_CODEX_SESSION_INDEX_FORCE_SUFFIX_BYTES = 16777216;
 const LOCAL_CODEX_STATUS_REFRESH_INTERVAL_MS = 45000;
 const LOCAL_CODEX_STATUS_SUFFIX_BYTES = 524288;
 const LOCAL_CODEX_RUNNING_STALE_MS = 90 * 1000;
-const LOCAL_CODEX_TERMINAL_MTIME_GRACE_MS = 2000;
 const LOCAL_CODEX_TARGETED_LOOKUP_DAYS = 45;
 const NEW_CODEX_SESSION_IMPORT_DELAYS_MS = [500, 1500, 3000, 6000, 10000, 15000];
 const LOCAL_CODEX_O1_PROMPT_MARKERS = [
@@ -1208,6 +1207,10 @@ function formatRelativeTime(value) {
 }
 
 function getSessionIcon(session) {
+  if (isSessionUnread(session) && isTerminalSessionStatus(session.status)) {
+    return new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('notificationsInfoIcon.foreground'));
+  }
+
   if (session.status === 'running') {
     return new vscode.ThemeIcon('sync~spin');
   }
@@ -1232,14 +1235,22 @@ function getSessionIcon(session) {
 }
 
 function getSessionTooltip(session) {
-  const state = getSessionStatusLabel(session) || (isSessionUnread(session) ? 'Unread completed session' : undefined);
-  return [session.title, state, session.url].filter(Boolean).join('\n');
+  const state = getSessionStatusLabel(session);
+  const readState = getSessionReadStateLabel(session);
+  const terminalAt = getSessionTerminalTimestamp(session);
+  const terminalLine = terminalAt
+    ? `${terminalTimestampLabelForStatus(session.status)}: ${formatLocalDateForTitle(new Date(terminalAt))}`
+    : undefined;
+  const statusLine = [state, readState].filter(Boolean).join(' - ');
+  return [session.title, statusLine, terminalLine, session.url].filter(Boolean).join('\n');
 }
 
 function getSessionStatusLabel(session) {
   switch (session.status) {
     case 'running':
       return 'Running';
+    case 'completed':
+      return 'Completed';
     case 'failed':
       return 'Failed';
     case 'aborted':
@@ -1249,6 +1260,14 @@ function getSessionStatusLabel(session) {
     default:
       return undefined;
   }
+}
+
+function getSessionReadStateLabel(session) {
+  if (!isTerminalSessionStatus(session.status)) {
+    return isSessionUnread(session) ? 'Unread' : undefined;
+  }
+
+  return isSessionUnread(session) ? 'Unread' : 'Read';
 }
 
 function isSessionUnread(session) {
@@ -1659,6 +1678,7 @@ function hasRefreshableLocalCodexSessions(context) {
 function mergeSessionStatus(session, candidate) {
   let changed = false;
   const previousStatus = session.status;
+  const previousTerminalAt = getSessionTerminalTimestamp(session);
 
   if (candidate.status && session.status !== candidate.status) {
     session.status = candidate.status;
@@ -1672,14 +1692,19 @@ function mergeSessionStatus(session, candidate) {
     }
   }
 
-  if (
-    (previousStatus === 'running' || previousStatus === 'stale') &&
-    candidate.status === 'completed' &&
-    candidate.lastCompletedAt &&
-    !isDateAtOrAfter(session.lastReadAt, candidate.lastCompletedAt)
-  ) {
-    session.unreadAt = candidate.lastCompletedAt;
-    changed = true;
+  const candidateTerminalAt = getSessionTerminalTimestamp(candidate);
+  if (isTerminalSessionStatus(candidate.status) && candidateTerminalAt) {
+    const terminalWasAlreadyKnown = previousStatus === candidate.status &&
+      previousTerminalAt &&
+      isDateAtOrAfter(previousTerminalAt, candidateTerminalAt);
+    if (
+      !terminalWasAlreadyKnown &&
+      !isDateAtOrAfter(session.lastReadAt, candidateTerminalAt) &&
+      session.unreadAt !== candidateTerminalAt
+    ) {
+      session.unreadAt = candidateTerminalAt;
+      changed = true;
+    }
   }
 
   if (session.unreadAt && isDateAtOrAfter(session.lastReadAt, session.unreadAt)) {
@@ -1688,6 +1713,36 @@ function mergeSessionStatus(session, candidate) {
   }
 
   return changed;
+}
+
+function isTerminalSessionStatus(status) {
+  return status === 'completed' || status === 'failed' || status === 'aborted';
+}
+
+function getSessionTerminalTimestamp(session) {
+  switch (session?.status) {
+    case 'completed':
+      return dateStringOrUndefined(session.lastCompletedAt);
+    case 'failed':
+      return dateStringOrUndefined(session.lastFailedAt);
+    case 'aborted':
+      return dateStringOrUndefined(session.lastAbortedAt);
+    default:
+      return undefined;
+  }
+}
+
+function terminalTimestampLabelForStatus(status) {
+  switch (status) {
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+      return 'Failed';
+    case 'aborted':
+      return 'Aborted';
+    default:
+      return 'Terminal';
+  }
 }
 
 function mergeSessionLineageMetadata(session, candidate) {
@@ -3208,9 +3263,7 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
   let lastAbortedAt;
   let lastFailedAt;
   let lastActivityAt;
-  let lastStartedOrder = -1;
-  let lastParsedRecordOrder = -1;
-  let lastTurnStatusEvent;
+  let latestStatusEvent;
 
   const lines = text.split(/\r?\n/);
   for (let lineOrder = 0; lineOrder < lines.length; lineOrder += 1) {
@@ -3226,71 +3279,106 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
       continue;
     }
 
-    lastParsedRecordOrder = lineOrder;
+    const payload = record.payload && typeof record.payload === 'object' ? record.payload : undefined;
     const timestamp = dateStringOrUndefined(record.timestamp);
     if (timestamp) {
       lastActivityAt = latestDateString([lastActivityAt, timestamp]);
     }
 
-    if (record.type !== 'event_msg' || !record.payload || typeof record.payload !== 'object') {
+    const activityAt = latestLocalCodexRecordActivityTime(record, payload, timestamp);
+    if (activityAt) {
+      lastActivityAt = latestDateString([lastActivityAt, activityAt]);
+    }
+
+    const rememberStatusEvent = (type, at) => {
+      const eventAt = dateStringOrUndefined(at) || activityAt || timestamp;
+      if (eventAt) {
+        lastActivityAt = latestDateString([lastActivityAt, eventAt]);
+      }
+
+      if (type === 'started' && eventAt) {
+        lastStartedAt = eventAt;
+      } else if (type === 'completed' && eventAt) {
+        lastCompletedAt = eventAt;
+      } else if (type === 'aborted' && eventAt) {
+        lastAbortedAt = eventAt;
+      } else if (type === 'failed' && eventAt) {
+        lastFailedAt = eventAt;
+      }
+
+      latestStatusEvent = { type, at: eventAt, order: lineOrder };
+    };
+
+    const payloadType = lowerString(payload?.type ?? record.type);
+    if (record.type === 'event_msg' && payloadType === 'task_started') {
+      rememberStatusEvent('started', latestDateString([timestamp, payload.started_at]));
       continue;
     }
 
-    const completedAt = dateStringOrUndefined(record.payload.completed_at);
-    if (completedAt) {
-      lastActivityAt = latestDateString([lastActivityAt, completedAt]);
+    if (record.type === 'event_msg' && payloadType === 'task_complete') {
+      rememberStatusEvent('completed', latestLocalCodexTerminalTime(record, payload, timestamp, 'completed'));
+      continue;
     }
 
-    if (record.payload.type === 'task_started') {
-      if (timestamp) {
-        lastStartedAt = timestamp;
+    if (record.type === 'event_msg' && payloadType === 'turn_aborted') {
+      rememberStatusEvent('aborted', latestLocalCodexTerminalTime(record, payload, timestamp, 'aborted'));
+      continue;
+    }
+
+    if (record.type === 'event_msg' && payloadType === 'error') {
+      rememberStatusEvent('failed', latestLocalCodexTerminalTime(record, payload, timestamp, 'failed'));
+      continue;
+    }
+
+    if (isLocalCodexPatchApplyEndRecord(record, payload)) {
+      if (payload?.success === false || localCodexStatusEventTypeFromStatusValue(payload?.status) === 'failed') {
+        rememberStatusEvent('failed', latestLocalCodexTerminalTime(record, payload, timestamp, 'failed'));
+      } else {
+        rememberStatusEvent('activity', activityAt);
       }
-      lastStartedOrder = lineOrder;
-      lastTurnStatusEvent = { type: 'started', at: timestamp, order: lineOrder };
-    } else if (record.payload.type === 'task_complete') {
-      const terminalAt = latestDateString([timestamp, completedAt]);
-      if (terminalAt) {
-        lastCompletedAt = terminalAt;
-      }
-      if (lineOrder >= lastStartedOrder) {
-        lastTurnStatusEvent = { type: 'completed', at: terminalAt, order: lineOrder };
-      }
-    } else if (record.payload.type === 'turn_aborted') {
-      const terminalAt = latestDateString([timestamp, completedAt]);
-      if (terminalAt) {
-        lastAbortedAt = terminalAt;
-      }
-      if (lineOrder >= lastStartedOrder) {
-        lastTurnStatusEvent = { type: 'aborted', at: terminalAt, order: lineOrder };
-      }
-    } else if (record.payload.type === 'error') {
-      if (timestamp) {
-        lastFailedAt = timestamp;
-      }
-      if (lineOrder >= lastStartedOrder) {
-        lastTurnStatusEvent = { type: 'failed', at: timestamp, order: lineOrder };
-      }
+      continue;
+    }
+
+    const explicitStatus = localCodexStatusEventTypeFromStatusValue(record.status) ||
+      localCodexStatusEventTypeFromStatusValue(payload?.status);
+    if (explicitStatus === 'failed' || explicitStatus === 'aborted') {
+      rememberStatusEvent(explicitStatus, latestLocalCodexTerminalTime(record, payload, timestamp, explicitStatus));
+      continue;
+    }
+
+    const processExitCode = localCodexFunctionCallExitCode(record, payload);
+    if (processExitCode !== undefined) {
+      rememberStatusEvent(
+        processExitCode === 0 ? 'activity' : 'failed',
+        processExitCode === 0 ? activityAt : latestLocalCodexTerminalTime(record, payload, timestamp, 'failed')
+      );
+      continue;
+    }
+
+    if (isLocalCodexAssistantFinalAnswer(record, payload)) {
+      rememberStatusEvent('completed', latestLocalCodexTerminalTime(record, payload, timestamp, 'completed'));
+      continue;
+    }
+
+    if (explicitStatus === 'completed' && isLocalCodexCompletedStatusRecord(record, payload)) {
+      rememberStatusEvent('completed', latestLocalCodexTerminalTime(record, payload, timestamp, 'completed'));
+      continue;
+    }
+
+    if (isLocalCodexActivityRecord(record, payload)) {
+      rememberStatusEvent('activity', activityAt);
     }
   }
 
   let status;
-  const lastTerminalStatus = terminalLocalCodexStatusFromTurnEvent(lastTurnStatusEvent);
   const activeAt = latestLocalCodexActivityTime(stat, lastStartedAt, lastActivityAt);
-  if (lastTerminalStatus && isTurnStatusSemanticallyOlderThanLatestStart(lastTurnStatusEvent, lastStartedAt)) {
+  if (isTerminalSessionStatus(latestStatusEvent?.type)) {
+    status = latestStatusEvent.type;
+  } else if (latestStatusEvent?.type === 'started' || latestStatusEvent?.type === 'activity') {
     status = activeAt ? activeLocalCodexStatusFromTime(activeAt) : undefined;
     if (activeAt) {
       lastActivityAt = latestDateString([lastActivityAt, new Date(activeAt).toISOString()]);
     }
-  } else if (
-    lastTurnStatusEvent?.type === 'failed' &&
-    hasActiveWorkAfterErrorTurnStatus(lastTurnStatusEvent, lastParsedRecordOrder, lastActivityAt, stat)
-  ) {
-    status = 'running';
-    if (activeAt) {
-      lastActivityAt = latestDateString([lastActivityAt, new Date(activeAt).toISOString()]);
-    }
-  } else if (lastTerminalStatus) {
-    status = lastTerminalStatus;
   } else if (lastStartedAt) {
     status = activeAt ? activeLocalCodexStatusFromTime(activeAt) : undefined;
     if (activeAt) {
@@ -3314,54 +3402,120 @@ function readLocalCodexSessionStatus(filePath, fileStat) {
   };
 }
 
-function terminalLocalCodexStatusFromTurnEvent(event) {
-  if (event?.type === 'completed') {
-    return 'completed';
+function latestLocalCodexRecordActivityTime(record, payload, timestamp) {
+  return latestDateString([
+    timestamp,
+    record.created_at,
+    record.updated_at,
+    record.started_at,
+    record.completed_at,
+    record.ended_at,
+    payload?.created_at,
+    payload?.updated_at,
+    payload?.started_at,
+    payload?.completed_at,
+    payload?.ended_at
+  ]);
+}
+
+function latestLocalCodexTerminalTime(record, payload, timestamp, status) {
+  const statusSpecificTimes = [];
+  if (status === 'completed') {
+    statusSpecificTimes.push(record.completed_at, payload?.completed_at);
+  } else if (status === 'failed') {
+    statusSpecificTimes.push(record.failed_at, record.error_at, payload?.failed_at, payload?.error_at);
+  } else if (status === 'aborted') {
+    statusSpecificTimes.push(record.aborted_at, record.cancelled_at, record.canceled_at);
+    statusSpecificTimes.push(payload?.aborted_at, payload?.cancelled_at, payload?.canceled_at);
   }
-  if (event?.type === 'aborted') {
-    return 'aborted';
+
+  return latestDateString([
+    timestamp,
+    ...statusSpecificTimes,
+    record.completed_at,
+    record.ended_at,
+    payload?.completed_at,
+    payload?.ended_at
+  ]);
+}
+
+function localCodexStatusEventTypeFromStatusValue(value) {
+  const status = lowerString(value);
+  if (!status) {
+    return undefined;
   }
-  if (event?.type === 'failed') {
+
+  if (status.includes('fail') || status.includes('error') || status === 'rejected') {
     return 'failed';
   }
+
+  if (
+    status.includes('abort') ||
+    status.includes('cancel') ||
+    status.includes('interrupt') ||
+    status === 'timeout' ||
+    status === 'timed_out'
+  ) {
+    return 'aborted';
+  }
+
+  if (['complete', 'completed', 'done', 'ok', 'success', 'succeeded'].includes(status)) {
+    return 'completed';
+  }
+
   return undefined;
 }
 
-function isTurnStatusSemanticallyOlderThanLatestStart(event, lastStartedAt) {
-  const eventTime = Date.parse(event?.at || '');
-  const startedTime = Date.parse(lastStartedAt || '');
-  return Boolean(
-    Number.isFinite(eventTime) &&
-    Number.isFinite(startedTime) &&
-    eventTime < startedTime
-  );
+function isLocalCodexPatchApplyEndRecord(record, payload) {
+  return lowerString(payload?.type ?? record.type) === 'patch_apply_end';
 }
 
-function hasActiveWorkAfterErrorTurnStatus(event, lastParsedRecordOrder, lastActivityAt, stat) {
-  if (!event) {
+function localCodexFunctionCallExitCode(record, payload) {
+  if (lowerString(payload?.type ?? record.type) !== 'function_call_output') {
+    return undefined;
+  }
+
+  const output = extractText(payload?.output ?? record.output);
+  const match = /^Process exited with code\s+(-?\d+)/m.exec(output);
+  if (!match) {
+    return undefined;
+  }
+
+  const exitCode = Number(match[1]);
+  return Number.isInteger(exitCode) ? exitCode : undefined;
+}
+
+function isLocalCodexAssistantFinalAnswer(record, payload) {
+  if (lowerString(payload?.phase ?? record.phase) !== 'final_answer') {
     return false;
   }
 
-  const eventTime = Date.parse(event.at || '');
-  const lastActivityTime = Date.parse(lastActivityAt || '');
-  const fileMtime = Number.isFinite(stat?.mtimeMs) ? stat.mtimeMs : undefined;
+  const role = lowerString(payload?.role ?? record.role);
+  const type = lowerString(payload?.type ?? record.type);
+  return role === 'assistant' || type === 'agent_message' || type === 'message' || record.type === 'response_item';
+}
 
-  const hasLaterRecord = lastParsedRecordOrder > event.order ||
-    (
-      Number.isFinite(eventTime) &&
-      Number.isFinite(lastActivityTime) &&
-      lastActivityTime > eventTime
-    );
-  const hasNewerFileWrite = Number.isFinite(eventTime) &&
-    fileMtime &&
-    fileMtime - eventTime > LOCAL_CODEX_TERMINAL_MTIME_GRACE_MS;
-  const hasRecentFileWrite = fileMtime &&
-    Date.now() - fileMtime <= LOCAL_CODEX_RUNNING_STALE_MS;
+function isLocalCodexCompletedStatusRecord(record, payload) {
+  if (isLocalCodexAssistantFinalAnswer(record, payload)) {
+    return true;
+  }
 
-  return Boolean(
-    (hasLaterRecord || hasNewerFileWrite) &&
-    hasRecentFileWrite
-  );
+  const role = lowerString(payload?.role ?? record.role);
+  const type = lowerString(payload?.type ?? record.type);
+  return role === 'assistant' && (type === 'message' || type === 'agent_message');
+}
+
+function isLocalCodexActivityRecord(record, payload) {
+  const type = lowerString(payload?.type ?? record.type);
+  return record.type === 'response_item' ||
+    type === 'agent_message' ||
+    type === 'function_call' ||
+    type === 'function_call_output' ||
+    type === 'reasoning';
+}
+
+function lowerString(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : undefined;
 }
 
 function latestLocalCodexActivityTime(stat, ...dateStrings) {

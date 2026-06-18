@@ -13,9 +13,9 @@ when the official ChatGPT/Codex history remains account-wide.
 - Automatically import open Codex conversation tabs for the current workspace.
 - Manually import local Codex CLI sessions whose metadata points at the current
   workspace, with opt-in automatic local import.
-- Show a spinner for active local Codex sessions, a stopped/failed indicator for
-  ended or inactive local runs, and an unread indicator when a tracked running
-  session completes.
+- Show a spinner for active local Codex sessions, completed/failed/aborted
+  status in session tooltips, and an unread indicator when a tracked local
+  session reaches a new terminal state.
 - Choose whether session grouping and sorting use latest activity time or the
   original session creation time.
 - Show only sessions saved for the active workspace root.
@@ -116,12 +116,15 @@ tail of that append-only index so newer title updates in large indexes are more
 likely to be applied. Unusually large or differently ordered Codex metadata can
 still require a manual title edit after import.
 Tracked local sessions show as running only while their JSONL file has recent
-file activity after the latest `task_started` event or while an existing
-running/stale session file is still being written. Completed turns use the
-normal session icon, aborted turns show as aborted, failed turns show as
-failed, and sessions with no terminal event stop spinning after a short
-inactivity window. Older error/abort records are not treated as terminal when
-newer records or recent file activity show the turn is still active. Status
+file activity after the latest Codex start or activity record. Completed turns
+use the normal session icon after they are read, while unread completed, failed,
+or aborted terminal states use the unread indicator until the session is opened.
+Aborted turns show as aborted, failed turns show as failed, and sessions with no
+terminal event stop spinning after a short inactivity window. Status detection
+uses Codex task events, final assistant answers, patch-apply results, explicit
+failed/error-like status fields, and command outputs that report a non-zero
+process exit code. Older error/abort/command-failure records are not treated as
+terminal when newer records show a later active or completed turn. Status
 refresh for already imported local sessions does not require automatic local
 import to be enabled and does not scan the Codex sessions directory.
 
