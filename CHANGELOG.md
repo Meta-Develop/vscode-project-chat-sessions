@@ -2,6 +2,10 @@
 
 ## 0.0.23
 
+- Add a User/direct Codex lineage category so ordinary parentless local Codex
+  sessions no longer appear in the O2 filter.
+- Accept both `ROLE:` and `ROLE=` MACO prompt prefixes for O2/O1/Other lineage
+  classification.
 - Read past context-only AGENTS/environment prelude user messages when local
   Codex metadata needs the first meaningful prompt for delegated-worker lineage
   classification.

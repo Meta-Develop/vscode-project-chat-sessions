@@ -13,6 +13,7 @@ const DATE_BASIS_STATE_KEY = 'projectChatSessions.dateBasis';
 const SESSION_DATE_BASIS_LAST_ACTIVITY = 'lastActivity';
 const SESSION_DATE_BASIS_CREATED_AT = 'createdAt';
 const LINEAGE_CATEGORY_ALL = 'all';
+const LINEAGE_CATEGORY_USER = 'user';
 const LINEAGE_CATEGORY_O2 = 'o2';
 const LINEAGE_CATEGORY_O1 = 'o1';
 const LINEAGE_CATEGORY_OTHER = 'other';
@@ -50,7 +51,7 @@ const LOCAL_CODEX_DELEGATED_WORKER_SELF_DESCRIPTION_PATTERNS = [
 const MACO_LINEAGE_PREFIX_LINES = 12;
 const MACO_LINEAGE_EARLY_SCAN_LINES = 96;
 const MACO_LINEAGE_BLOCK_MAX_LINES = 8;
-const MACO_LINEAGE_METADATA_PATTERN = /^\s*(ROLE|AGENT_KIND|AGENT_LABEL|PARENT_THREAD_ID|THREAD_DEPTH|NO_FURTHER_DELEGATION)\s*:\s*(.*?)\s*$/i;
+const MACO_LINEAGE_METADATA_PATTERN = /^\s*(ROLE|AGENT_KIND|AGENT_LABEL|PARENT_THREAD_ID|THREAD_DEPTH|NO_FURTHER_DELEGATION)\s*[:=]\s*(.*?)\s*$/i;
 
 const localCodexDiscoveryCache = {
   key: undefined,
@@ -232,6 +233,9 @@ async function activate(context) {
     vscode.commands.registerCommand('projectChatSessions.setLineageFilter', async () => {
       await setLineageFilterFromPicker(context, provider);
     }),
+    vscode.commands.registerCommand('projectChatSessions.showUserLineageSessions', async () => {
+      await setLineageRoleFilter(context, provider, LINEAGE_CATEGORY_USER);
+    }),
     vscode.commands.registerCommand('projectChatSessions.showO2LineageSessions', async () => {
       await setLineageRoleFilter(context, provider, LINEAGE_CATEGORY_O2);
     }),
@@ -405,12 +409,17 @@ async function setLineageFilterFromPicker(context, provider) {
     {
       label: 'Default',
       value: LINEAGE_FILTER_ACTION_DEFAULT,
-      description: 'Hide spawned/delegated agents'
+      description: 'Show user/direct and explicit O2 roots'
+    },
+    {
+      label: 'User/direct sessions',
+      value: LINEAGE_CATEGORY_USER,
+      description: 'Parentless local Codex sessions without O1/O2/delegated signals'
     },
     {
       label: 'O2 root/top-supervisor sessions',
       value: LINEAGE_CATEGORY_O2,
-      description: 'MACO O2 and local Codex roots'
+      description: 'Only explicit MACO O2/top-supervisor sessions'
     },
     {
       label: 'O1 MACO child orchestrators',
@@ -540,9 +549,14 @@ async function pickLineageCategory() {
       description: 'Show the selected source session and all descendants.'
     },
     {
+      label: 'User/direct sessions',
+      value: LINEAGE_CATEGORY_USER,
+      description: 'Show parentless local Codex sessions without O1/O2/delegated signals.'
+    },
+    {
       label: 'O2 roots/top supervisors',
       value: LINEAGE_CATEGORY_O2,
-      description: 'Show MACO O2 and local Codex roots.'
+      description: 'Show explicit MACO O2/top-supervisor sessions.'
     },
     {
       label: 'O1 MACO child orchestrators',
@@ -2546,7 +2560,7 @@ function classifyLocalCodexLineageRole(meta) {
     return LINEAGE_CATEGORY_OTHER;
   }
 
-  return LINEAGE_CATEGORY_O2;
+  return LINEAGE_CATEGORY_USER;
 }
 
 function classifyExplicitStructuredLineageRole(meta) {
@@ -2686,8 +2700,9 @@ function findEarlyMacoLineageMetadataBlock(lines) {
       keys.add(entry.key);
     }
 
-    if (isMacoLineageMetadataBlock(keys)) {
-      return macoLineageMetadataFromEntries(entries);
+    const metadata = macoLineageMetadataFromEntries(entries);
+    if (classifyMacoLineageMetadata(metadata) || isMacoLineageMetadataBlock(keys)) {
+      return metadata;
     }
   }
 
@@ -2972,19 +2987,30 @@ function getSessionLineageRole(session) {
     if (role === LINEAGE_CATEGORY_O2 && hasAuxiliaryLineageDefaultOtherSignal(session)) {
       return LINEAGE_CATEGORY_OTHER;
     }
+    if (role === LINEAGE_CATEGORY_USER && hasAuxiliaryLineageDefaultOtherSignal(session)) {
+      return LINEAGE_CATEGORY_OTHER;
+    }
+    if (role === LINEAGE_CATEGORY_O2 && isImplicitUserDirectLocalCodexSession(session)) {
+      return LINEAGE_CATEGORY_USER;
+    }
     return role;
   }
 
-  if (isLocalCodexSession(session) && !hasAuxiliaryLineageDefaultOtherSignal(session)) {
-    return LINEAGE_CATEGORY_O2;
+  if (isImplicitUserDirectLocalCodexSession(session)) {
+    return LINEAGE_CATEGORY_USER;
   }
 
   return LINEAGE_CATEGORY_OTHER;
 }
 
+function isImplicitUserDirectLocalCodexSession(session) {
+  return isLocalCodexSession(session) && !hasAuxiliaryLineageDefaultOtherSignal(session);
+}
+
 function normalizeLineageRole(value) {
   const normalized = stringOrUndefined(value)?.toLowerCase();
   if (
+    normalized === LINEAGE_CATEGORY_USER ||
     normalized === LINEAGE_CATEGORY_O2 ||
     normalized === LINEAGE_CATEGORY_O1 ||
     normalized === LINEAGE_CATEGORY_OTHER
@@ -2998,6 +3024,8 @@ function labelForLineageCategory(value) {
   switch (value) {
     case LINEAGE_CATEGORY_ALL:
       return 'Full lineage';
+    case LINEAGE_CATEGORY_USER:
+      return 'User/direct sessions';
     case LINEAGE_CATEGORY_O2:
       return 'O2 roots/top supervisors';
     case LINEAGE_CATEGORY_O1:

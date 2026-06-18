@@ -19,9 +19,10 @@ when the official ChatGPT/Codex history remains account-wide.
 - Choose whether session grouping and sorting use latest activity time or the
   original session creation time.
 - Show only sessions saved for the active workspace root.
-- Filter local Codex sessions with one lineage filter menu: default view, O2
-  roots/top supervisors, O1 MACO child orchestrators, spawned/delegated agents,
-  or a full lineage from a selected source session.
+- Filter local Codex sessions with one lineage filter menu: default view,
+  user/direct sessions, explicit O2 roots/top supervisors, O1 MACO child
+  orchestrators, spawned/delegated agents, or a full lineage from a selected
+  source session.
 - Open a saved session in the Codex sidebar by clicking it in the Activity Bar
   view, with editor-tab fallback when the Codex sidebar deeplink is unavailable.
 - Rename, copy, and remove saved session shortcuts.
@@ -105,9 +106,11 @@ but never sent a user message are skipped. Local Codex subagent/delegated-worker
 session files and Multi-Agent_Coding_Orchestrator child/worker sessions are
 imported with lineage metadata when present, then hidden from the default tree
 until a lineage filter is active. Multi-Agent_Coding_Orchestrator role filters
-use the canonical `ROLE` prefix first; `AGENT_LABEL`/nickname is display
-metadata and does not affect O2/O1/Other classification. For performance, the
-importer reads the beginning of each session file. Background imports read the
+use the canonical `ROLE:` or `ROLE=` prefix first; `AGENT_LABEL`/nickname is
+display metadata and does not affect User/direct, O2, O1, or spawned/delegated
+classification. Parentless local Codex sessions without explicit O1, O2, or
+delegated-worker signals are classified as User/direct, not O2. For performance,
+the importer reads the beginning of each session file. Background imports read the
 beginning of `session_index.jsonl`; manual refresh/import paths also read the
 tail of that append-only index so newer title updates in large indexes are more
 likely to be applied. Unusually large or differently ordered Codex metadata can
@@ -123,17 +126,18 @@ refresh for already imported local sessions does not require automatic local
 import to be enabled and does not scan the Codex sessions directory.
 
 Use the `Filter by Codex Lineage` funnel in the `Project Chats` view title to
-choose the default view, O2 root/top-supervisor sessions, O1 MACO child
-orchestrators, spawned/delegated agents, or a full lineage from a selected
-source session. The filter refreshes local Codex metadata for the current
-trusted workspace before applying role or source filters, so stale imported
-sessions can be reclassified automatically. O1 only means explicit MACO child
-orchestrators; native Codex subagents, explorers, workers, researchers, and
-auditors appear under spawned/delegated agents. You can also run the direct O2,
-O1, spawned/delegated, and source-lineage commands from the Command Palette or
-right-click a session and choose `Filter Lineage from This Session`. The active
-filter is shown in the tree message; use `Clear Lineage Filter` to return to the
-normal view.
+choose the default view, user/direct sessions, explicit O2 root/top-supervisor
+sessions, O1 MACO child orchestrators, spawned/delegated agents, or a full
+lineage from a selected source session. The filter refreshes local Codex
+metadata for the current trusted workspace before applying role or source
+filters, so stale imported sessions can be reclassified automatically. O2 only
+means explicit MACO top-supervisor/root sessions, and O1 only means explicit
+MACO child orchestrators; native Codex subagents, explorers, workers,
+researchers, and auditors appear under spawned/delegated agents. You can also
+run the direct User/direct, O2, O1, spawned/delegated, and source-lineage
+commands from the Command Palette or right-click a session and choose
+`Filter Lineage from This Session`. The active filter is shown in the tree
+message; use `Clear Lineage Filter` to return to the normal view.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.

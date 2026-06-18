@@ -53,6 +53,7 @@
     "onCommand:projectChatSessions.setViewLocation",
     "onCommand:projectChatSessions.setDateBasis",
     "onCommand:projectChatSessions.setLineageFilter",
+    "onCommand:projectChatSessions.showUserLineageSessions",
     "onCommand:projectChatSessions.showO2LineageSessions",
     "onCommand:projectChatSessions.showO1LineageSessions",
     "onCommand:projectChatSessions.showOtherLineageSessions",
@@ -124,6 +125,11 @@
         "command": "projectChatSessions.setLineageFilter",
         "title": "Filter by Codex Lineage",
         "icon": "$(filter)"
+      },
+      {
+        "command": "projectChatSessions.showUserLineageSessions",
+        "title": "Show User/Direct Codex Sessions",
+        "icon": "$(account)"
       },
       {
         "command": "projectChatSessions.showO2LineageSessions",
