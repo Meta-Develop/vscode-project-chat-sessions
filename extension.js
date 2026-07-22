@@ -899,10 +899,8 @@ async function openCodexUrl(url, parsed = parseCodexConversationUri(url)) {
     return false;
   }
 
-  if (await openCodexSidebarRoute(parsed)) {
-    return true;
-  }
-
+  // External vscode: deeplinks can be dispatched to a different VS Code window.
+  // Open the conversation editor through this extension host's window instead.
   const uri = vscode.Uri.parse(url);
   try {
     await vscode.commands.executeCommand('vscode.openWith', uri, CODEX_EDITOR_VIEW_TYPE);
@@ -934,33 +932,6 @@ function parseHttpsUri(value) {
     return vscode.Uri.parse(parsed.href);
   } catch {
     return undefined;
-  }
-}
-
-async function openCodexSidebarRoute(parsed) {
-  if (!parsed.kind || !parsed.conversationId) {
-    return false;
-  }
-
-  try {
-    await vscode.commands.executeCommand('chatgpt.openSidebar');
-  } catch {
-    return false;
-  }
-
-  const routeUri = vscode.Uri.parse(
-    `${vscode.env.uriScheme}://openai.chatgpt/${encodeURIComponent(parsed.kind)}/${encodeURIComponent(parsed.conversationId)}`
-  );
-
-  try {
-    const externalUri = await vscode.env.asExternalUri(routeUri);
-    return await vscode.env.openExternal(externalUri);
-  } catch {
-    try {
-      return await vscode.env.openExternal(routeUri);
-    } catch {
-      return false;
-    }
   }
 }
 
