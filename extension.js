@@ -19,6 +19,7 @@ const LINEAGE_CATEGORY_O1 = 'o1';
 const LINEAGE_CATEGORY_OTHER = 'other';
 const LINEAGE_FILTER_ACTION_DEFAULT = 'default';
 const LINEAGE_FILTER_ACTION_SOURCE = 'source';
+const AUTHORITATIVE_LINEAGE_SNAPSHOT = Symbol('authoritativeLineageSnapshot');
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
 const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
@@ -413,7 +414,7 @@ async function setLineageFilterFromPicker(context, provider) {
     {
       label: 'User/direct sessions',
       value: LINEAGE_CATEGORY_USER,
-      description: 'Parentless local Codex sessions without O1/O2/delegated signals'
+      description: 'Direct/manual sessions without orchestrator or delegated signals'
     },
     {
       label: 'O2 root/top-supervisor sessions',
@@ -472,11 +473,11 @@ function activeLineageFilterOption(options, lineageFilter) {
 }
 
 async function setLineageFilterFromSourcePicker(context, provider) {
-  if (!(await refreshLocalCodexMetadataForLineageFilter(context, provider))) {
+  const workspaceKey = requireWorkspaceKey();
+  if (!workspaceKey) {
     return;
   }
 
-  const workspaceKey = getWorkspaceKey();
   const sessions = getSessions(context, workspaceKey);
   if (sessions.length === 0) {
     vscode.window.showWarningMessage('No sessions are saved for this workspace.');
@@ -502,11 +503,11 @@ async function setLineageFilterFromSourcePicker(context, provider) {
     return;
   }
 
-  await setLineageFilterFromSession(context, provider, selected.session, { refreshBeforeApply: false });
+  await setLineageFilterFromSession(context, provider, selected.session);
 }
 
 async function setLineageRoleFilter(context, provider, category) {
-  if (!(await refreshLocalCodexMetadataForLineageFilter(context, provider))) {
+  if (!requireWorkspaceKey()) {
     return;
   }
 
@@ -515,7 +516,11 @@ async function setLineageRoleFilter(context, provider, category) {
   });
 }
 
-async function setLineageFilterFromSession(context, provider, session, options = {}) {
+async function setLineageFilterFromSession(context, provider, session) {
+  if (!requireWorkspaceKey()) {
+    return;
+  }
+
   const category = await pickLineageCategory();
   if (!category) {
     return;
@@ -525,12 +530,6 @@ async function setLineageFilterFromSession(context, provider, session, options =
   if (!sourceThreadId) {
     vscode.window.showWarningMessage('This session does not have a usable thread id for lineage filtering.');
     return;
-  }
-
-  if (options.refreshBeforeApply !== false) {
-    if (!(await refreshLocalCodexMetadataForLineageFilter(context, provider))) {
-      return;
-    }
   }
 
   await provider.setLineageFilter({
@@ -550,7 +549,7 @@ async function pickLineageCategory() {
     {
       label: 'User/direct sessions',
       value: LINEAGE_CATEGORY_USER,
-      description: 'Show parentless local Codex sessions without O1/O2/delegated signals.'
+      description: 'Show direct/manual sessions without orchestrator or delegated signals.'
     },
     {
       label: 'O2 roots/top supervisors',
@@ -575,19 +574,6 @@ async function pickLineageCategory() {
   });
 
   return selected?.value;
-}
-
-async function refreshLocalCodexMetadataForLineageFilter(context, provider) {
-  if (!requireWorkspaceKey()) {
-    return false;
-  }
-
-  if (isLocalCodexFilesystemAccessAllowed()) {
-    await importDetectedCodexSessions(context, { forceLocal: true });
-    provider.refresh();
-  }
-
-  return true;
 }
 
 async function updateLineageFilterContext(active) {
@@ -1717,6 +1703,7 @@ function terminalTimestampLabelForStatus(status) {
 }
 
 function mergeSessionLineageMetadata(session, candidate) {
+  const authoritative = candidate[AUTHORITATIVE_LINEAGE_SNAPSHOT] === true;
   let changed = false;
   for (const field of [
     'parentThreadId',
@@ -1730,6 +1717,13 @@ function mergeSessionLineageMetadata(session, candidate) {
   ]) {
     if (candidate[field] !== undefined && session[field] !== candidate[field]) {
       session[field] = candidate[field];
+      changed = true;
+    } else if (
+      authoritative &&
+      candidate[field] === undefined &&
+      Object.prototype.hasOwnProperty.call(session, field)
+    ) {
+      delete session[field];
       changed = true;
     }
   }
@@ -2539,8 +2533,13 @@ function extractLocalCodexLineageMetadata(payload) {
 }
 
 function lineageFieldsFromLocalCodexMeta(meta) {
+  if (!meta) {
+    return {};
+  }
+
   const lineageMeta = localCodexLineageMetadataWithPromptPrefix(meta);
   return {
+    [AUTHORITATIVE_LINEAGE_SNAPSHOT]: true,
     parentThreadId: lineageMeta.parentThreadId,
     threadDepth: lineageMeta.threadDepth,
     agentRole: lineageMeta.agentRole,
@@ -3026,7 +3025,11 @@ function getSessionLineageRole(session) {
     return LINEAGE_CATEGORY_USER;
   }
 
-  return LINEAGE_CATEGORY_OTHER;
+  if (hasAuxiliaryLineageDefaultOtherSignal(session)) {
+    return LINEAGE_CATEGORY_OTHER;
+  }
+
+  return LINEAGE_CATEGORY_USER;
 }
 
 function isImplicitUserDirectLocalCodexSession(session) {

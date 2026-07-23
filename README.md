@@ -131,16 +131,17 @@ import to be enabled and does not scan the Codex sessions directory.
 Use the `Filter by Codex Lineage` funnel in the `Project Chats` view title to
 choose the default view, user/direct sessions, explicit O2 root/top-supervisor
 sessions, O1 MACO child orchestrators, spawned/delegated agents, or a full
-lineage from a selected source session. The filter refreshes local Codex
-metadata for the current trusted workspace before applying role or source
-filters, so stale imported sessions can be reclassified automatically. O2 only
-means explicit MACO top-supervisor/root sessions, and O1 only means explicit
-MACO child orchestrators; native Codex subagents, explorers, workers,
-researchers, and auditors appear under spawned/delegated agents. You can also
-run the direct User/direct, O2, O1, spawned/delegated, and source-lineage
-commands from the Command Palette or right-click a session and choose
-`Filter Lineage from This Session`. The active filter is shown in the tree
-message; use `Clear Lineage Filter` to return to the normal view.
+lineage from a selected source session. Role and source filters apply
+immediately to saved sessions without scanning local metadata. Use the Project
+Chats Refresh button for an on-demand local metadata resync when saved local
+sessions need reclassification. O2 only means explicit MACO top-supervisor/root
+sessions, and O1 only means explicit MACO child orchestrators; native Codex
+subagents, explorers, workers, researchers, and auditors appear under
+spawned/delegated agents. You can also run the direct User/direct, O2, O1,
+spawned/delegated, and source-lineage commands from the Command Palette or
+right-click a session and choose `Filter Lineage from This Session`. The active
+filter is shown in the tree message; use `Clear Lineage Filter` to return to the
+normal view.
 
 If your Codex sessions live somewhere else, set
 `projectChatSessions.localCodexSessionsPath` to that `sessions` directory.
