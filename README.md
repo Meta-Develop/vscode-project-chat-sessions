@@ -23,8 +23,9 @@ when the official ChatGPT/Codex history remains account-wide.
   user/direct sessions, explicit O2 roots/top supervisors, O1 MACO child
   orchestrators, spawned/delegated agents, or a full lineage from a selected
   source session.
-- Open a saved session in the Codex sidebar by clicking it in the Activity Bar
-  view, with editor-tab fallback when the Codex sidebar deeplink is unavailable.
+- Open a saved session in the same VS Code window's right Codex sidebar by
+  clicking it in the Activity Bar view. If the sidebar deeplink is unavailable,
+  the extension shows a warning instead of opening a center editor tab.
 - Rename, copy, and remove saved session shortcuts.
 - Set a workspace-specific project home URL for the `New Session` button.
 - Use VS Code's built-in Move View picker to place `Project Chats` in the

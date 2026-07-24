@@ -22,7 +22,6 @@ const LINEAGE_FILTER_ACTION_SOURCE = 'source';
 const AUTHORITATIVE_LINEAGE_SNAPSHOT = Symbol('authoritativeLineageSnapshot');
 const CODEX_SCHEME = 'openai-codex';
 const CODEX_AUTHORITY = 'route';
-const CODEX_EDITOR_VIEW_TYPE = 'chatgpt.conversationEditor';
 const CODEX_CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
 const LOCAL_CODEX_SCAN_MIN_INTERVAL_MS = 60000;
 const LOCAL_CODEX_SCAN_MAX_DIRECTORIES = 8192;
@@ -853,8 +852,7 @@ async function openUrl(url) {
       return false;
     }
 
-    await openCodexUrl(value, codexUri);
-    return true;
+    return openCodexUrl(value, codexUri);
   }
 
   const uri = parseHttpsUri(value);
@@ -885,16 +883,14 @@ async function openCodexUrl(url, parsed = parseCodexConversationUri(url)) {
     return false;
   }
 
-  // External vscode: deeplinks can be dispatched to a different VS Code window.
-  // Open the conversation editor through this extension host's window instead.
-  const uri = vscode.Uri.parse(url);
-  try {
-    await vscode.commands.executeCommand('vscode.openWith', uri, CODEX_EDITOR_VIEW_TYPE);
-    return true;
-  } catch {
-    await vscode.commands.executeCommand('vscode.open', uri);
+  if (await openCodexSidebarRoute(parsed)) {
     return true;
   }
+
+  vscode.window.showWarningMessage(
+    'Could not open this session in the Codex sidebar. Make sure the Codex extension is available in this VS Code window, then try again.'
+  );
+  return false;
 }
 
 function parseHttpsUri(value) {
@@ -918,6 +914,28 @@ function parseHttpsUri(value) {
     return vscode.Uri.parse(parsed.href);
   } catch {
     return undefined;
+  }
+}
+
+async function openCodexSidebarRoute(parsed) {
+  if (!parsed?.kind || !parsed.conversationId) {
+    return false;
+  }
+
+  try {
+    await vscode.commands.executeCommand('chatgpt.openSidebar');
+    const routeUri = vscode.Uri.parse(
+      `${vscode.env.uriScheme}://openai.chatgpt/${encodeURIComponent(parsed.kind)}/${encodeURIComponent(parsed.conversationId)}`
+    );
+    const scopedUri = await vscode.env.asExternalUri(routeUri);
+    if (!scopedUri || scopedUri.scheme !== vscode.env.uriScheme) {
+      return false;
+    }
+
+    await vscode.commands.executeCommand('vscode.open', scopedUri);
+    return true;
+  } catch {
+    return false;
   }
 }
 
