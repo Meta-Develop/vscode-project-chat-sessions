@@ -1,0 +1,90 @@
+name: Public Repository CI
+
+"on":
+  push: {}
+  pull_request: {}
+  schedule:
+    - cron: "43 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    public-ci-${{ github.workflow }}-${{
+    github.event.pull_request.head.repo.full_name || github.repository }}-${{
+    github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  extension-package:
+    name: Validate extension package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up exact Node.js toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.22.2"
+
+      - name: Validate CommonJS syntax and manifest entry point
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v22.22.2"
+          node --check extension.js
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const manifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          if (manifest.main !== "./extension.js") {
+            throw new Error(`Unexpected extension entry point: ${manifest.main}`);
+          }
+
+          const entryPoint = path.resolve(manifest.main);
+          if (!fs.statSync(entryPoint).isFile()) {
+            throw new Error(`Extension entry point is not a file: ${entryPoint}`);
+          }
+          NODE
+
+      - name: Verify exact VSIX contents and package
+        shell: bash
+        env:
+          VSCE_VERSION: "3.9.2"
+        run: |
+          set -euo pipefail
+
+          test "$(
+            npx --yes "@vscode/vsce@${VSCE_VERSION}" --version
+          )" = "$VSCE_VERSION"
+
+          actual_files="$RUNNER_TEMP/vsix-files.actual"
+          expected_files="$RUNNER_TEMP/vsix-files.expected"
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" ls --no-dependencies \
+            | LC_ALL=C sort > "$actual_files"
+          cat > "$expected_files" <<'FILES'
+          CHANGELOG.md
+          LICENSE
+          NOTICE
+          README.md
+          extension.js
+          media/project-chat-sessions-icon.png
+          media/project-chat-sessions.svg
+          package.json
+          FILES
+          LC_ALL=C sort -o "$expected_files" "$expected_files"
+          diff -u "$expected_files" "$actual_files"
+
+          output="$RUNNER_TEMP/project-chat-sessions.vsix"
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" package \
+            --no-dependencies \
+            --out "$output"
+          test -s "$output"
